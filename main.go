@@ -5,6 +5,7 @@ import (
 	"go/types"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"text/template/parse"
 
@@ -13,10 +14,16 @@ import (
 	"github.com/k0kubun/pp/v3"
 )
 
+type templateBlock struct {
+	name string
+	root *templateVar
+}
+
 type templateVar struct {
 	path             string
-	fields           map[string]*templateVar
+	children         map[string]*templateVar
 	expectedRangable bool
+	annotations      map[string][]string
 }
 
 func main() {
@@ -38,40 +45,61 @@ func main() {
 		panic(err)
 	}
 
-	blocks := map[string]*templateVar{}
+	blocks := map[string]*templateBlock{}
 	for _, tree := range treeMap {
-		vars := &templateVar{
-			path:   "",
-			fields: map[string]*templateVar{},
+		block := &templateBlock{
+			name: tree.Name,
+			root: &templateVar{
+				path:     "",
+				children: map[string]*templateVar{},
+			},
 		}
-
-		visitNodes(vars, tree.Root)
-		blocks[tree.Name] = vars
+		blocks[tree.Name] = block
+		visitNodes(block.root, tree.Root)
 	}
 
 	pp.Println(blocks)
 
-	targetType := os.Args[2]
-	p := strings.LastIndex(targetType, ".")
-	pkgName, typeName := targetType[:p], targetType[p+1:]
-
-	pkgs, err := packages.Load(&packages.Config{
-		Mode: packages.NeedTypes | packages.NeedTypesInfo,
-	}, pkgName)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	obj := pkgs[0].Types.Scope().Lookup(typeName)
-
-	err = validateTemplate(blocks[""], obj.Type())
-	if err != nil {
-		log.Fatal(err)
+	for name, block := range blocks {
+		if err := validateTemplate(block.root, nil); err != nil {
+			log.Printf("block %q: %s", name, err)
+		}
 	}
 }
 
 func validateTemplate(root *templateVar, typ types.Type) error {
 	// ref. (*text/template.state).evalField
+	if typ == nil {
+		if len(root.annotations["type"]) == 0 {
+			// TODO
+			return fmt.Errorf("no @type annotation")
+		}
+		if len(root.annotations["type"]) > 1 {
+			return fmt.Errorf("multiple @type annotations")
+		}
+
+		targetType := root.annotations["type"][0]
+		p := strings.LastIndex(targetType, ".")
+		pkgName, typeName := targetType[:p], targetType[p+1:]
+
+		pkgs, err := packages.Load(&packages.Config{
+			Mode: packages.NeedTypes | packages.NeedTypesInfo,
+		}, pkgName)
+		if err != nil {
+			return err
+		}
+		if pkgs[0].Errors != nil {
+			return pkgs[0].Errors[0]
+		}
+		obj := pkgs[0].Types.Scope().Lookup(typeName)
+		if obj == nil {
+			return fmt.Errorf("%s not found", targetType)
+		}
+		typ = obj.Type()
+	} else {
+		// TODO
+	}
+
 	origType := typ
 	for {
 		if t, ok := typ.(*types.Named); ok {
@@ -83,7 +111,7 @@ func validateTemplate(root *templateVar, typ types.Type) error {
 		}
 	}
 
-	for n, v := range root.fields {
+	for n, v := range root.children {
 		switch t := typ.(type) {
 		case *types.Struct:
 			var found bool
@@ -123,6 +151,18 @@ func visitNodes(v *templateVar, root *parse.ListNode) {
 	}
 
 	for _, n := range root.Nodes {
+		if c, ok := n.(*parse.CommentNode); ok {
+			log.Printf("comment: %s", c.Text)
+			m := regexp.MustCompile(`^/\*\s*@(\w+)\s+(.*?)\s*\*/$`).FindStringSubmatch(c.Text)
+			if m != nil {
+				if v.annotations == nil {
+					v.annotations = map[string][]string{}
+				}
+				v.annotations[m[1]] = append(v.annotations[m[1]], m[2])
+			}
+			continue
+		}
+
 		var pipe *parse.PipeNode
 		switch n := n.(type) {
 		case *parse.ActionNode:
@@ -167,13 +207,13 @@ func visitPipe(v *templateVar, pipe *parse.PipeNode) *templateVar {
 			if fn, ok := arg.(*parse.FieldNode); ok {
 				cur := v
 				for _, ident := range fn.Ident {
-					if _, ok := cur.fields[ident]; !ok {
-						cur.fields[ident] = &templateVar{
-							path:   cur.path + "." + ident,
-							fields: map[string]*templateVar{},
+					if _, ok := cur.children[ident]; !ok {
+						cur.children[ident] = &templateVar{
+							path:     cur.path + "." + ident,
+							children: map[string]*templateVar{},
 						}
 					}
-					cur = cur.fields[ident]
+					cur = cur.children[ident]
 				}
 				if result == nil {
 					result = cur
