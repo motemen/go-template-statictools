@@ -1,0 +1,35 @@
+{{define "subtemplate"}}
+  {{.SubTemplateField}}
+{{end}}
+
+{{/* cmt */}}
+
+Var1: {{.Var1}}
+{{func1 .Var2.Var22}}
+
+{{$var := func2 .Var3}}
+{{func3 .Var4 .Var5 | func4}}
+
+{{.}}
+
+{{if .}}}}
+  {{.IfVar}}
+{{else}}
+  {{.ElseVar}}
+{{end}}
+
+{{with .With}}
+  {{.WithVar}}
+{{end}}
+
+{{range .Slice}}
+  {{.SliceVar}}
+{{end}}
+
+{{with .}}
+  {{.RootVar}}
+{{end}}
+
+{{range .}}
+  {{.RootVar}}
+{{end}}
