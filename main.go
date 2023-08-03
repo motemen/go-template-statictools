@@ -1,17 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"go/types"
+	"io"
 	"log"
 	"os"
 	"regexp"
 	"strings"
 	"text/template/parse"
 
+	"go.uber.org/multierr"
 	"golang.org/x/tools/go/packages"
-
-	"github.com/k0kubun/pp/v3"
 )
 
 type templateBlock struct {
@@ -21,58 +22,116 @@ type templateBlock struct {
 
 type templateVar struct {
 	path             string
+	pos              parse.Pos
 	children         map[string]*templateVar
 	expectedRangable bool
 	annotations      map[string][]string
 }
 
-func main() {
-	log.SetFlags(log.Lshortfile)
+type Checker struct {
+	filename string
+	content  []byte
+	blocks   map[string]*templateBlock
+	treeMap  map[string]*parse.Tree
+}
 
-	content, err := os.ReadFile(os.Args[1])
+func init() {
+	log.SetFlags(0)
+}
+
+func (c *Checker) ParseFile(filename string) error {
+	f, err := os.Open(filename)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	defer f.Close()
 
-	t := parse.Tree{
-		Mode: parse.ParseComments | parse.SkipFuncCheck,
-	}
+	c.filename = filename
+	return c.Parse(f)
+}
 
-	treeMap := map[string]*parse.Tree{}
-
-	_, err = t.Parse(string(content), "", "", treeMap)
+func (c *Checker) Parse(r io.Reader) error {
+	content, err := io.ReadAll(r)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
-	blocks := map[string]*templateBlock{}
-	for _, tree := range treeMap {
+	c.content = content
+	c.treeMap = map[string]*parse.Tree{}
+
+	t := parse.Tree{Mode: parse.ParseComments | parse.SkipFuncCheck}
+	_, err = t.Parse(string(content), "", "", c.treeMap)
+	if err != nil {
+		return err
+	}
+
+	c.blocks = map[string]*templateBlock{}
+	for _, tree := range c.treeMap {
 		block := &templateBlock{
 			name: tree.Name,
 			root: &templateVar{
 				path:     "",
+				pos:      tree.Root.Pos,
 				children: map[string]*templateVar{},
 			},
 		}
-		blocks[tree.Name] = block
+		c.blocks[tree.Name] = block
 		visitNodes(block.root, tree.Root)
 	}
 
-	pp.Println(blocks)
+	return nil
+}
 
-	for name, block := range blocks {
-		if err := validateTemplate(block.root, nil); err != nil {
-			log.Printf("block %q: %s", name, err)
+func (c *Checker) Check() error {
+	var errors error
+	for _, block := range c.blocks {
+		err := c.validateTemplate(block.root, nil)
+		if err != nil {
+			errors = multierr.Append(errors, err)
 		}
+	}
+	return errors
+}
+
+func (c *Checker) position(pos parse.Pos) string {
+	n := int(pos)
+	content := c.content[:n]
+	nl := bytes.LastIndexByte(content, '\n')
+
+	col := n - nl
+	line := 1 + bytes.Count(content, []byte{'\n'})
+	filename := c.filename
+	if filename == "" {
+		filename = "-"
+	}
+	return fmt.Sprintf("%s:%d:%d", filename, line, col)
+}
+
+func main() {
+	var c Checker
+	err := c.ParseFile(os.Args[1])
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = c.Check()
+	if err != nil {
+		for _, err := range multierr.Errors(err) {
+			log.Println(err)
+		}
+		os.Exit(1)
 	}
 }
 
-func validateTemplate(root *templateVar, typ types.Type) error {
+func (c *Checker) validateTemplate(root *templateVar, typ types.Type) error {
+	var errors error
+
 	// ref. (*text/template.state).evalField
 	if typ == nil {
 		if len(root.annotations["type"]) == 0 {
 			// TODO
-			return fmt.Errorf("no @type annotation")
+			// return fmt.Errorf("no @type annotation")
+			return nil
 		}
 		if len(root.annotations["type"]) > 1 {
 			return fmt.Errorf("multiple @type annotations")
@@ -127,23 +186,26 @@ func validateTemplate(root *templateVar, typ types.Type) error {
 							return fmt.Errorf("%s: expected slice, but got %s", v.path, ft)
 						}
 					}
-					if err := validateTemplate(v, ft); err != nil {
-						return err
+					if err := c.validateTemplate(v, ft); err != nil {
+						errors = multierr.Append(errors, err)
 					}
 					break
 				}
 			}
 			if !found {
-				return fmt.Errorf("%s not found in %s", v.path, origType)
+				errors = multierr.Append(errors, fmt.Errorf("%s: %s not found in %s", c.position(v.pos), v.path, origType))
 			}
 
 		default:
-			return fmt.Errorf("%s: unexpected type: %s (%T)", v.path, typ, typ)
+			log.Printf("%s: BUG: unexpected type: %s in %s", c.position(v.pos), origType, v.path)
 		}
 	}
 
-	return nil
+	return errors
 }
+
+// {{/* @key value */}}
+var rxAnnotation = regexp.MustCompile(`^/\*\s*@(\w+)\s+(.*?)\s*\*/$`)
 
 func visitNodes(v *templateVar, root *parse.ListNode) {
 	if root == nil {
@@ -152,8 +214,7 @@ func visitNodes(v *templateVar, root *parse.ListNode) {
 
 	for _, n := range root.Nodes {
 		if c, ok := n.(*parse.CommentNode); ok {
-			log.Printf("comment: %s", c.Text)
-			m := regexp.MustCompile(`^/\*\s*@(\w+)\s+(.*?)\s*\*/$`).FindStringSubmatch(c.Text)
+			m := rxAnnotation.FindStringSubmatch(c.Text)
 			if m != nil {
 				if v.annotations == nil {
 					v.annotations = map[string][]string{}
@@ -180,7 +241,7 @@ func visitNodes(v *templateVar, root *parse.ListNode) {
 			continue
 		}
 
-		newV := visitPipe(v, pipe)
+		newV := visitPipeNode(v, pipe)
 		if newV == nil {
 			newV = v
 		}
@@ -200,8 +261,9 @@ func visitNodes(v *templateVar, root *parse.ListNode) {
 	}
 }
 
-func visitPipe(v *templateVar, pipe *parse.PipeNode) *templateVar {
+func visitPipeNode(v *templateVar, pipe *parse.PipeNode) *templateVar {
 	var result *templateVar
+
 	for _, cmd := range pipe.Cmds {
 		for _, arg := range cmd.Args {
 			if fn, ok := arg.(*parse.FieldNode); ok {
@@ -210,6 +272,7 @@ func visitPipe(v *templateVar, pipe *parse.PipeNode) *templateVar {
 					if _, ok := cur.children[ident]; !ok {
 						cur.children[ident] = &templateVar{
 							path:     cur.path + "." + ident,
+							pos:      fn.Pos,
 							children: map[string]*templateVar{},
 						}
 					}
