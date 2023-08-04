@@ -29,6 +29,18 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Println(buf.String())
+
+	buf = bytes.Buffer{}
+	err = template.Must(template.New("").Parse("{{.A.Bar .N}}")).Execute(&buf, struct {
+		A Barer
+		N int
+	}{
+		N: 999,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println(buf.String())
 }
 
 func __main() {

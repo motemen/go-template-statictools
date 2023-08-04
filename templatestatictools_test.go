@@ -39,6 +39,14 @@ func TestChecker_Parse(t *testing.T) {
 		return ref
 	}
 
+	testParse(`{{with .Meth .Arg}}{{.Foo}}{{end}}`, func(t *testing.T, root *templateRef) {
+		refExists(t, root, "Meth")
+		refExists(t, root, "Arg")
+		t.Skip("TODO")
+		assert.Assert(t, dig(root, "Meth.Foo") == nil)
+		refExists(t, root, "Meth().Foo")
+	})
+
 	testParse(`Hello`, func(t *testing.T, root *templateRef) {
 	})
 

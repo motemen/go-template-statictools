@@ -350,8 +350,11 @@ func (c *Checker) visitNodes(ref *templateRef, root *parse.ListNode) {
 func (c *Checker) visitPipeNode(v *templateRef, pipe *parse.PipeNode) *templateRef {
 	var result *templateRef
 
+	c.debug("%s: visitPipeNode: pipe=%s (%v)", c.position(pipe.Position()), pipe, pipe.NodeType)
+
 	for _, cmd := range pipe.Cmds {
 		for _, arg := range cmd.Args {
+			c.debug("%s: visitPipeNode: arg=%s (%T)", c.position(arg.Position()), arg, arg)
 			switch arg := arg.(type) {
 			case *parse.FieldNode:
 				cur := v
@@ -406,6 +409,7 @@ func (c *Checker) visitPipeNode(v *templateRef, pipe *parse.PipeNode) *templateR
 				c.visitPipeNode(v, arg)
 
 			case *parse.IdentifierNode:
+				c.debug("%s: IdentifierNode: %s", c.position(arg.Position()), arg.Ident)
 			// ignore for now
 
 			case *parse.NilNode, *parse.NumberNode, *parse.BoolNode, *parse.StringNode:
