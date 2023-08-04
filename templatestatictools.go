@@ -2,8 +2,6 @@ package templatestatictools
 
 import (
 	"bytes"
-	"encoding/json"
-	"flag"
 	"fmt"
 	"go/types"
 	"io"
@@ -23,16 +21,35 @@ type TemplateVar struct {
 
 type templateBlock struct {
 	Name string
-	Refs *templateRef
+	Root *templateRef
 }
 
+// templateRef is a later-to-be-evaluated reference in a template.
 type templateRef struct {
-	Path             string
-	Pos              parse.Pos
-	Refs             map[string]*templateRef
-	ExpectedRangable bool // FIXME
-	Annotations      map[string][]string
-	root             *templateRef
+	// string representation of the path to this reference.
+	// e.g. "Foo.Bar.Baz" for {{ .Foo.Bar.Baz }}
+	Path string
+
+	// TODO:
+	// Accessor = string | "mapKey" type | "templateArg" name
+	//
+	// Accessor of a ref for X:
+	//   {{ .X }} -> "X"
+	//   {{ index .Map .X }} -> "mapKey" (typeof .X)
+	//   {{ template "name" .X }} -> "templateArg" "name"
+
+	Pos parse.Pos
+
+	// map of child references.
+	// e.g. When Path is "Foo", Refs["Bar"] is a reference to {{ .Foo.Bar }}
+	Refs map[string]*templateRef
+
+	// type expectation of this reference.
+	ExpectedRangable bool // FIXME: could be more precise, e.g. ExpectedTypes
+
+	Annotations map[string][]string
+
+	root *templateRef
 }
 
 func (r *templateRef) Root() *templateRef {
@@ -87,7 +104,7 @@ func (c *Checker) Parse(r io.Reader) error {
 	for _, tree := range c.treeMap {
 		block := &templateBlock{
 			Name: tree.Name,
-			Refs: &templateRef{
+			Root: &templateRef{
 				Path: "",
 				Pos:  tree.Root.Pos,
 				Refs: map[string]*templateRef{},
@@ -95,7 +112,7 @@ func (c *Checker) Parse(r io.Reader) error {
 			},
 		}
 		c.Blocks[tree.Name] = block
-		c.visitNodes(block.Refs, tree.Root)
+		c.visitNodes(block.Root, tree.Root)
 	}
 
 	return nil
@@ -104,7 +121,7 @@ func (c *Checker) Parse(r io.Reader) error {
 func (c *Checker) Check() error {
 	var errors error
 	for _, block := range c.Blocks {
-		err := c.validateTemplate(block.Refs, nil)
+		err := c.validateTemplate(block.Root, nil)
 		if err != nil {
 			errors = multierr.Append(errors, err)
 		}
@@ -124,36 +141,6 @@ func (c *Checker) position(pos parse.Pos) string {
 		filename = "-"
 	}
 	return fmt.Sprintf("%s:%d:%d", filename, line, col)
-}
-
-// Usage: gotmplcheck [-json] tmpl.in
-func main() {
-	var flagJson bool
-	flag.BoolVar(&flagJson, "json", false, "output parsed result as JSON")
-	flag.Parse()
-
-	var c Checker
-	err := c.ParseFile(flag.Args()[0])
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if flagJson {
-		b, err := json.MarshalIndent(c.Blocks, "", "  ")
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(string(b))
-		return
-	}
-
-	err = c.Check()
-	if err != nil {
-		for _, err := range multierr.Errors(err) {
-			log.Println(err)
-		}
-		os.Exit(1)
-	}
 }
 
 func (c *Checker) validateTemplate(root *templateRef, typ types.Type) error {
@@ -269,7 +256,7 @@ func (c *Checker) validateTemplate(root *templateRef, typ types.Type) error {
 // {{/* @key value */}}
 var rxAnnotation = regexp.MustCompile(`^/\*\s*@(\w+)\s+(.*?)\s*\*/$`)
 
-func (c *Checker) visitNodes(v *templateRef, root *parse.ListNode) {
+func (c *Checker) visitNodes(ref *templateRef, root *parse.ListNode) {
 	if root == nil {
 		return
 	}
@@ -278,10 +265,10 @@ func (c *Checker) visitNodes(v *templateRef, root *parse.ListNode) {
 		if c, ok := n.(*parse.CommentNode); ok {
 			m := rxAnnotation.FindStringSubmatch(c.Text)
 			if m != nil {
-				if v.Annotations == nil {
-					v.Annotations = map[string][]string{}
+				if ref.Annotations == nil {
+					ref.Annotations = map[string][]string{}
 				}
-				v.Annotations[m[1]] = append(v.Annotations[m[1]], m[2])
+				ref.Annotations[m[1]] = append(ref.Annotations[m[1]], m[2])
 			}
 			continue
 		}
@@ -289,62 +276,86 @@ func (c *Checker) visitNodes(v *templateRef, root *parse.ListNode) {
 		var pipe *parse.PipeNode
 		switch n := n.(type) {
 		case *parse.ActionNode:
+			// {{ .Foo.Bar }}
 			pipe = n.Pipe
+
 		case *parse.IfNode:
+			// {{ if .Foo.Bar }}
 			pipe = n.Pipe
+
 		case *parse.RangeNode:
+			// {{ range .Foo.Bar }}
 			pipe = n.Pipe
+
 		case *parse.WithNode:
+			// {{ with .Foo.Bar }}
 			pipe = n.Pipe
+
 		case *parse.TemplateNode:
+			// {{ template "foo" .Foo.Bar }}
 			pipe = n.Pipe
-		}
-		if pipe == nil {
+
+		case *parse.TextNode:
+			// nop
+			continue
+
+		default:
+			c.debug("%s: BUG: unexpected node: %T", c.position(n.Position()), n)
 			continue
 		}
 
-		newV := c.visitPipeNode(v, pipe)
+		pipeRef := c.visitPipeNode(ref, pipe)
 
 		switch n := n.(type) {
 		case *parse.ActionNode:
 			// nop
+
 		case *parse.IfNode:
-			c.visitNodes(v, n.List)
-			c.visitNodes(v, n.ElseList)
+			c.visitNodes(ref, n.List)
+			c.visitNodes(ref, n.ElseList)
+
 		case *parse.RangeNode:
-			if newV == nil {
-				c.debug("%s: skip further processing; pipe=%s; node=%T", c.position(n.Position()), n.Pipe, n)
+			// visit range body with new context
+			if pipeRef == nil {
+				// TODO: given the following template,
+				//   {{ range (index .Map .Key) }}{{.Field}}{{end}}
+				c.debug("%s: could not evaluate ref for %T: pipe=%s", c.position(n.Position()), n, n.Pipe)
 			} else {
-				newV.ExpectedRangable = true
-				c.visitNodes(newV, n.List)
+				pipeRef.ExpectedRangable = true
+				c.visitNodes(pipeRef, n.List)
 			}
+
 		case *parse.WithNode:
-			if newV == nil {
-				// c.debug("%s: skip further processing; pipe=%s; node=%T", c.position(n.Position()), n.Pipe, n)
+			if pipeRef == nil {
+				c.debug("%s: could not evaluate ref for %T: pipe=%s", c.position(n.Position()), n, n.Pipe)
 				dummy := &templateRef{
 					Path: "#dummy",
 					Pos:  -1,
 					Refs: map[string]*templateRef{},
-					root: v.Root(), // Need to keep this
+					root: ref.Root(), // Want to keep this
 				}
 				c.visitNodes(dummy, n.List)
 			} else {
-				c.visitNodes(newV, n.List)
+				c.visitNodes(pipeRef, n.List)
 			}
+
 		default:
 			c.debug("%s: skip further processing; node=%s (%T)", c.position(n.Position()), n, n)
 		}
 	}
 }
 
+// visitPipeNode visits a pipe node and deepens the template reference tree.
+// returns a new templateRef for later use, if the pipe node is a range or with.
 func (c *Checker) visitPipeNode(v *templateRef, pipe *parse.PipeNode) *templateRef {
 	var result *templateRef
 
 	for _, cmd := range pipe.Cmds {
 		for _, arg := range cmd.Args {
-			if fn, ok := arg.(*parse.FieldNode); ok {
+			switch arg := arg.(type) {
+			case *parse.FieldNode:
 				cur := v
-				for _, ident := range fn.Ident {
+				for _, ident := range arg.Ident {
 					if _, ok := cur.Refs[ident]; !ok {
 						path := cur.Path
 						if v.ExpectedRangable {
@@ -352,7 +363,7 @@ func (c *Checker) visitPipeNode(v *templateRef, pipe *parse.PipeNode) *templateR
 						}
 						cur.Refs[ident] = &templateRef{
 							Path: path + "." + ident,
-							Pos:  fn.Pos,
+							Pos:  arg.Pos,
 							Refs: map[string]*templateRef{},
 							root: v.Root(),
 						}
@@ -362,14 +373,16 @@ func (c *Checker) visitPipeNode(v *templateRef, pipe *parse.PipeNode) *templateR
 				if result == nil {
 					result = cur
 				}
-			} else if _, ok := arg.(*parse.DotNode); ok {
+
+			case *parse.DotNode:
 				if result == nil {
 					result = v
 				}
-			} else if vn, ok := arg.(*parse.VariableNode); ok {
-				if vn.Ident[0] == "$" {
+
+			case *parse.VariableNode:
+				if arg.Ident[0] == "$" {
 					cur := v.Root()
-					for _, ident := range vn.Ident[1:] {
+					for _, ident := range arg.Ident[1:] {
 						if _, ok := cur.Refs[ident]; !ok {
 							path := cur.Path
 							if v.ExpectedRangable {
@@ -377,7 +390,7 @@ func (c *Checker) visitPipeNode(v *templateRef, pipe *parse.PipeNode) *templateR
 							}
 							cur.Refs[ident] = &templateRef{
 								Path: path + "." + ident,
-								Pos:  vn.Pos,
+								Pos:  arg.Pos,
 								Refs: map[string]*templateRef{},
 								root: v.Root(),
 							}
@@ -388,11 +401,17 @@ func (c *Checker) visitPipeNode(v *templateRef, pipe *parse.PipeNode) *templateR
 						result = cur
 					}
 				}
-			} else if pn, ok := arg.(*parse.PipeNode); ok {
-				c.visitPipeNode(v, pn)
-			} else if _, ok := arg.(*parse.IdentifierNode); ok {
-				// ignore for now
-			} else {
+
+			case *parse.PipeNode:
+				c.visitPipeNode(v, arg)
+
+			case *parse.IdentifierNode:
+			// ignore for now
+
+			case *parse.NilNode, *parse.NumberNode, *parse.BoolNode, *parse.StringNode:
+			// nop
+
+			default:
 				c.debug("unknown arg: %s (%T)", arg, arg)
 			}
 		}

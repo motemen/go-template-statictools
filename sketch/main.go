@@ -1,11 +1,51 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"log"
+	"text/template"
 	"text/template/parse"
 )
 
+type Barer struct{}
+
+func (Barer) Bar(x any) string {
+	return fmt.Sprintf("Bar(%v)", x)
+}
+
+type A []any
+
+func (A) X() string { return "A.X" }
+
 func main() {
+	var buf bytes.Buffer
+	err := template.Must(template.New("").Parse("{{range .Foo}}{{.X}}{{end}} / {{.Foo.X}}")).Execute(&buf, struct {
+		Foo A
+	}{
+		Foo: []any{struct{ X string }{"X inside slice"}},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println(buf.String())
+}
+
+func __main() {
+	var buf bytes.Buffer
+	err := template.Must(template.New("").Parse("{{ .Foo | .Bar }}")).Execute(&buf, struct {
+		Foo int
+		Barer
+	}{
+		Foo: 1,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println(buf.String())
+}
+
+func _main() {
 	log.SetFlags(log.Lshortfile)
 
 	t := parse.Tree{
