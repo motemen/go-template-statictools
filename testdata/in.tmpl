@@ -1,8 +1,12 @@
+{{/* @type github.com/motemen/go-template-statictools.TemplateVar */}}
+
 {{define "subtemplate"}}
   {{.SubTemplateField}}
 {{end}}
 
 {{/* cmt */}}
+
+{{$.TopVar1}}
 
 Var1: {{.Var1}}
 {{func1 .Var2.Var22}}
@@ -31,5 +35,9 @@ Var1: {{.Var1}}
 {{end}}
 
 {{range .}}
+  {{.RootVar}}
+{{end}}
+
+{{range (f 1)}}
   {{.RootVar}}
 {{end}}
