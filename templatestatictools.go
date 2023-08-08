@@ -2,6 +2,7 @@ package templatestatictools
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"go/types"
 	"io"
@@ -14,10 +15,6 @@ import (
 	"go.uber.org/multierr"
 	"golang.org/x/tools/go/packages"
 )
-
-type TemplateVar struct {
-	Foo1 string
-}
 
 type templateBlock struct {
 	Name string
@@ -41,16 +38,73 @@ type templateRef struct {
 	Pos parse.Pos
 
 	// map of child references.
-	// e.g. When Path is "Foo", Refs["Bar"] is a reference to {{ .Foo.Bar }}
-	Refs map[string]*templateRef
+	// e.g. When Path is "Foo", Children["Bar"] is a reference to {{ .Foo.Bar }}
+	Children map[string]*templateRef
+
+	TypeSource typeSpec // fieldOf <ref> <field> / rangeValueOf <ref> / returnValueOf <ref>
+
+	// TypeConstraints []typeSpec // argOf <ref> <pos> / rangeKeyOf <ref> / rangable
+
+	Type types.Type
 
 	// type expectation of this reference.
+	// deprecated: to be replaced by TypeConstraints.
 	ExpectedRangable bool // FIXME: could be more precise, e.g. ExpectedTypes
 
 	Annotations map[string][]string
 
 	root *templateRef
 }
+
+func (r *templateRef) MarshalJSON() ([]byte, error) {
+	v := map[string]any{
+		"Path":        r.Path,
+		"Pos":         r.Pos,
+		"Children":    r.Children,
+		"TypeSource":  r.TypeSource,
+		"Annotations": r.Annotations,
+	}
+	if r.Type != nil {
+		v["Type"] = r.Type.String()
+	}
+	return json.Marshal(v)
+}
+
+type typeSpec struct {
+	kind      typeSpecKind
+	ref       *templateRef
+	stringArg string
+	uintArg   uint
+}
+
+type typeSpecKind int
+
+const (
+	typeSpecKindUnknown typeSpecKind = iota
+
+	// ref = reference which has the field or method
+	// stringArg = name of the field/method
+	// uintArg = (unused)
+	typeSpecKindFieldOf
+
+	// stringArg = (unused)
+	// uintArg = (unused)
+	typeSpecKindRangeValueOf
+
+	// stringArg = (unused)
+	// uintArg = (unused)
+	typeSpecKindReturnValueOf
+
+	// stringArg = (unused)
+	// uintArg = (unused)
+	typeSpecKindRangeKeyOf
+
+	// stringArg = (unused)
+	// uintArg = index of the argument
+	typeSpecKindArgOf
+
+	typeSpecKindRangable
+)
 
 func (r *templateRef) Root() *templateRef {
 	if r.root == nil {
@@ -105,10 +159,10 @@ func (c *Checker) Parse(r io.Reader) error {
 		block := &templateBlock{
 			Name: tree.Name,
 			Root: &templateRef{
-				Path: "",
-				Pos:  tree.Root.Pos,
-				Refs: map[string]*templateRef{},
-				root: nil,
+				Path:     "",
+				Pos:      tree.Root.Pos,
+				Children: map[string]*templateRef{},
+				root:     nil,
 			},
 		}
 		c.Blocks[tree.Name] = block
@@ -162,7 +216,8 @@ func (c *Checker) validateTemplate(root *templateRef, typ types.Type) error {
 		pkgName, typeName := targetType[:p], targetType[p+1:]
 
 		pkgs, err := packages.Load(&packages.Config{
-			Mode: packages.NeedTypes | packages.NeedTypesInfo,
+			Mode:  packages.NeedTypes | packages.NeedTypesInfo,
+			Tests: true, // FIXME: this is only for testing purpose
 		}, pkgName)
 		if err != nil {
 			return err
@@ -174,11 +229,16 @@ func (c *Checker) validateTemplate(root *templateRef, typ types.Type) error {
 		for _, pkg := range pkgs {
 			obj := pkg.Types.Scope().Lookup(typeName)
 			if obj == nil {
-				return fmt.Errorf("%s not found", targetType)
+				continue
 			}
 			typ = obj.Type()
 			break
 		}
+		if typ == nil {
+			return fmt.Errorf("%s not found", targetType)
+		}
+
+		root.Type = typ
 	} else {
 		// TODO
 	}
@@ -194,7 +254,7 @@ func (c *Checker) validateTemplate(root *templateRef, typ types.Type) error {
 		}
 	}
 
-	for n, v := range root.Refs {
+	for n, v := range root.Children {
 		switch t := typ.(type) {
 		case *types.Struct:
 			var found bool
@@ -212,6 +272,8 @@ func (c *Checker) validateTemplate(root *templateRef, typ types.Type) error {
 					}
 					if err := c.validateTemplate(v, ft); err != nil {
 						errors = multierr.Append(errors, err)
+					} else {
+						v.Type = ft
 					}
 					break
 				}
@@ -261,6 +323,8 @@ func (c *Checker) visitNodes(ref *templateRef, root *parse.ListNode) {
 		return
 	}
 
+	// ref. state.walk()
+	// https://github.com/golang/go/blob/go1.20.7/src/text/template/exec.go#L261
 	for _, n := range root.Nodes {
 		if c, ok := n.(*parse.CommentNode); ok {
 			m := rxAnnotation.FindStringSubmatch(c.Text)
@@ -270,6 +334,7 @@ func (c *Checker) visitNodes(ref *templateRef, root *parse.ListNode) {
 				}
 				ref.Annotations[m[1]] = append(ref.Annotations[m[1]], m[2])
 			}
+			// NOTE(motemen): maybe add `specificType "<typename>"` toref.TypeSources?
 			continue
 		}
 
@@ -319,7 +384,7 @@ func (c *Checker) visitNodes(ref *templateRef, root *parse.ListNode) {
 			if pipeRef == nil {
 				// TODO: given the following template,
 				//   {{ range (index .Map .Key) }}{{.Field}}{{end}}
-				c.debug("%s: could not evaluate ref for %T: pipe=%s", c.position(n.Position()), n, n.Pipe)
+				c.debug("%s: FIXME: could not evaluate ref for %T: pipe=%s", c.position(n.Position()), n, n.Pipe)
 			} else {
 				pipeRef.ExpectedRangable = true
 				c.visitNodes(pipeRef, n.List)
@@ -327,12 +392,12 @@ func (c *Checker) visitNodes(ref *templateRef, root *parse.ListNode) {
 
 		case *parse.WithNode:
 			if pipeRef == nil {
-				c.debug("%s: could not evaluate ref for %T: pipe=%s", c.position(n.Position()), n, n.Pipe)
+				c.debug("%s: FIXME: could not evaluate ref for %T: pipe=%s", c.position(n.Position()), n, n.Pipe)
 				dummy := &templateRef{
-					Path: "#dummy",
-					Pos:  -1,
-					Refs: map[string]*templateRef{},
-					root: ref.Root(), // Want to keep this
+					Path:     "#dummy",
+					Pos:      -1,
+					Children: map[string]*templateRef{},
+					root:     ref.Root(), // Want to keep this
 				}
 				c.visitNodes(dummy, n.List)
 			} else {
@@ -347,79 +412,128 @@ func (c *Checker) visitNodes(ref *templateRef, root *parse.ListNode) {
 
 // visitPipeNode visits a pipe node and deepens the template reference tree.
 // returns a new templateRef for later use, if the pipe node is a range or with.
-func (c *Checker) visitPipeNode(v *templateRef, pipe *parse.PipeNode) *templateRef {
+func (c *Checker) visitPipeNode(env *templateRef, pipe *parse.PipeNode) *templateRef {
 	var result *templateRef
+	// if true, further evaluation is skipped
+	// mostly because of lack of implementation
+	var invalid bool
 
-	c.debug("%s: visitPipeNode: pipe=%s (%v)", c.position(pipe.Position()), pipe, pipe.NodeType)
+	c.debug("%s: visitPipeNode: pipe=%s", c.position(pipe.Position()), pipe)
 
-	for _, cmd := range pipe.Cmds {
-		for _, arg := range cmd.Args {
-			c.debug("%s: visitPipeNode: arg=%s (%T)", c.position(arg.Position()), arg, arg)
-			switch arg := arg.(type) {
-			case *parse.FieldNode:
-				cur := v
-				for _, ident := range arg.Ident {
-					if _, ok := cur.Refs[ident]; !ok {
-						path := cur.Path
-						if v.ExpectedRangable {
-							path += "[]"
-						}
-						cur.Refs[ident] = &templateRef{
-							Path: path + "." + ident,
-							Pos:  arg.Pos,
-							Refs: map[string]*templateRef{},
-							root: v.Root(),
-						}
-					}
-					cur = cur.Refs[ident]
-				}
-				if result == nil {
-					result = cur
-				}
+	// cf. evalCommand
 
-			case *parse.DotNode:
-				if result == nil {
-					result = v
-				}
+	// pipe = cmd0 | cmd1 ...
+	for i, cmd := range pipe.Cmds {
+		// cmd = arg0 arg1 arg2
+		// where
+		//   arg = FieldNode .X.Y.Z
+		//       | ChainNode (index .M .K).Foo
+		//       | IdentifierNode len
+		//       | ...
 
-			case *parse.VariableNode:
-				if arg.Ident[0] == "$" {
-					cur := v.Root()
-					for _, ident := range arg.Ident[1:] {
-						if _, ok := cur.Refs[ident]; !ok {
-							path := cur.Path
-							if v.ExpectedRangable {
-								path += "[]"
-							}
-							cur.Refs[ident] = &templateRef{
-								Path: path + "." + ident,
-								Pos:  arg.Pos,
-								Refs: map[string]*templateRef{},
-								root: v.Root(),
-							}
-						}
-						cur = cur.Refs[ident]
-					}
-					if result == nil {
-						result = cur
-					}
-				}
+		argRefs := make([]*templateRef, len(cmd.Args))
 
-			case *parse.PipeNode:
-				c.visitPipeNode(v, arg)
+		c.debug("%s: visitPipeNode: - cmd[%d] %q", c.position(cmd.Position()), i, cmd)
 
-			case *parse.IdentifierNode:
-				c.debug("%s: IdentifierNode: %s", c.position(arg.Position()), arg.Ident)
-			// ignore for now
+		for i, arg := range cmd.Args {
+			c.debug("%s: visitPipeNode:   - arg[%d] %q (%T)", c.position(arg.Position()), i, arg, arg)
 
-			case *parse.NilNode, *parse.NumberNode, *parse.BoolNode, *parse.StringNode:
-			// nop
+			var err error
+			argRefs[i], err = c.visitArg(env, arg)
+			if err != nil {
+				c.debug("%s: visitPipeNode:     %s", c.position(arg.Position()), err)
+				invalid = true
+				result = nil
+			}
+		}
 
-			default:
-				c.debug("unknown arg: %s (%T)", arg, arg)
+		if !invalid {
+			var err error
+			result, err = c.evalArgs(i == 0, argRefs, result)
+			if err != nil {
+				c.debug("%s: visitPipeNode: evalArgs: %s", c.position(cmd.Position()), err)
+				invalid = true
+				result = nil
 			}
 		}
 	}
 
 	return result
+}
+
+// {{.Foo}} -> fieldRef("Foo") -> type: field(.Foo)
+// {{.Foo .Bar}} -> call(fieldRef("Foo"), fieldRef("Bar")) -> type: resultOf(.Foo)
+// {{index .Map .Key}} -> call(function("index"), fieldRef("Key")) -> type: rangeValueOf(.Map)
+func (c *Checker) evalArgs(first bool, argRefs []*templateRef, prevRef *templateRef) (*templateRef, error) {
+	if !first {
+		argRefs = append(argRefs, prevRef)
+	}
+
+	if len(argRefs) == 1 {
+		return argRefs[0], nil
+	}
+
+	return nil, fmt.Errorf("evalArgs: not implemented")
+}
+
+func (c *Checker) visitArg(env *templateRef, arg parse.Node) (*templateRef, error) {
+	switch arg := arg.(type) {
+	case *parse.FieldNode:
+		cur := env
+		for _, ident := range arg.Ident {
+			if _, ok := cur.Children[ident]; !ok {
+				path := cur.Path
+				if env.ExpectedRangable {
+					path += "[]"
+				}
+				cur.Children[ident] = &templateRef{
+					Path:     path + "." + ident,
+					Pos:      arg.Pos,
+					Children: map[string]*templateRef{},
+					root:     env.Root(),
+				}
+			}
+			cur = cur.Children[ident]
+		}
+		return cur, nil
+
+	case *parse.DotNode:
+		return env, nil
+
+	case *parse.VariableNode:
+		if arg.Ident[0] == "$" {
+			cur := env.Root()
+			for _, ident := range arg.Ident[1:] {
+				if _, ok := cur.Children[ident]; !ok {
+					path := cur.Path
+					if env.ExpectedRangable {
+						path += "[]"
+					}
+					cur.Children[ident] = &templateRef{
+						Path:     path + "." + ident,
+						Pos:      arg.Pos,
+						Children: map[string]*templateRef{},
+						root:     env.Root(),
+					}
+				}
+				cur = cur.Children[ident]
+			}
+			return cur, nil
+		}
+
+	case *parse.PipeNode:
+		c.visitPipeNode(env, arg)
+
+	case *parse.IdentifierNode:
+		c.debug("%s: visitPipeNode:     TODO: IdentifierNode: %s", c.position(arg.Position()), arg.Ident)
+		// ignore for now
+
+	case *parse.NilNode, *parse.NumberNode, *parse.BoolNode, *parse.StringNode:
+		// TODO
+
+	default:
+		c.debug("unknown arg: %s (%T)", arg, arg)
+	}
+
+	return nil, fmt.Errorf("not implemented: %s (%T)", arg, arg)
 }
