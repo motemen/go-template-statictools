@@ -96,7 +96,7 @@ func TestChecker_Parse(t *testing.T) {
 		assert.Assert(t, dig(root, "Foo.Qux") == nil)
 	})
 
-	testParse(`{{with (index .Map .Key)}}{{$.Bar}}{{end}}`, func(t *testing.T, root *templateRef) {
+	testParse(`{{with index .Map .Key}}{{$.Bar}}{{end}}`, func(t *testing.T, root *templateRef) {
 		refExists(t, root, "Map")
 		refExists(t, root, "Key")
 		refExists(t, root, "Bar")
@@ -107,12 +107,12 @@ func TestChecker_Parse(t *testing.T) {
 		// refExists(t, root, "Foo[].Bar")
 	})
 
-	testParse(`{{range (index .Map .Key)}}{{.Foo}}{{$.Bar}}{{end}}`, func(t *testing.T, root *templateRef) {
-		t.Skip("TODO")
-		refExists(t, root, ".Map")
-		refExists(t, root, ".Key")
-		refExists(t, root, ".Map[].Foo")
-		refExists(t, root, ".Bar")
+	testParse(`{{with index .Map .Key}}{{.Foo}}{{$.Bar}}{{end}}`, func(t *testing.T, root *templateRef) {
+		t.Logf("%+v", root.Children["Map"])
+		refExists(t, root, "Map")
+		refExists(t, root, "Key")
+		refExists(t, root, "Map.[].Foo")
+		refExists(t, root, "Bar")
 	})
 
 	testParse(`{{if .Foo}}{{.Bar}}{{end}}`, func(t *testing.T, root *templateRef) {

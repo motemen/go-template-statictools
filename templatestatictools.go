@@ -71,7 +71,7 @@ func (r *templateRef) MarshalJSON() ([]byte, error) {
 }
 
 type typeSpec struct {
-	kind      typeSpecKind
+	Kind      typeSpecKind
 	ref       *templateRef
 	stringArg string
 	uintArg   uint
@@ -431,34 +431,106 @@ func (c *Checker) visitPipeNode(env *templateRef, pipe *parse.PipeNode) *templat
 		//       | IdentifierNode len
 		//       | ...
 
-		argRefs := make([]*templateRef, len(cmd.Args))
-
 		c.debug("%s: visitPipeNode: - cmd[%d] %q", c.position(cmd.Position()), i, cmd)
 
-		for i, arg := range cmd.Args {
-			c.debug("%s: visitPipeNode:   - arg[%d] %q (%T)", c.position(arg.Position()), i, arg, arg)
-
-			var err error
-			argRefs[i], err = c.visitArg(env, arg)
-			if err != nil {
-				c.debug("%s: visitPipeNode:     %s", c.position(arg.Position()), err)
-				invalid = true
-				result = nil
-			}
+		if i > 0 {
+			c.debug("%s: visitPipeNode: TODO: pipe result", c.position(cmd.Position()), i)
+			continue
 		}
 
-		if !invalid {
+		var err error
+		result, err = c.visitArgs(env, cmd.Args)
+		if err != nil {
+			c.debug("%s: visitPipeNode: visitArgs: %s", c.position(cmd.Position()), err)
+			invalid = true
+			_ = invalid
+			result = nil
+		}
+		/*
+			for i, arg := range cmd.Args {
+				c.debug("%s: visitPipeNode:   - arg[%d] %q (%T)", c.position(arg.Position()), i, arg, arg)
+
+				var err error
+				argRefs[i], err = c.visitArg(env, arg)
+				if err != nil {
+					c.debug("%s: visitPipeNode:     %s", c.position(arg.Position()), err)
+					invalid = true
+					result = nil
+				}
+			}
+
+			if !invalid {
+				var err error
+				result, err = c.evalArgs(i == 0, argRefs, result)
+				if err != nil {
+					c.debug("%s: visitPipeNode: evalArgs: %s", c.position(cmd.Position()), err)
+					invalid = true
+					result = nil
+				}
+			}
+		*/
+
+	}
+
+	return result
+}
+
+func (c *Checker) visitArgs(env *templateRef, args []parse.Node) (*templateRef, error) {
+	first := args[0]
+	switch first := first.(type) {
+	case *parse.FieldNode:
+		argRefs := make([]*templateRef, len(args))
+		for i, arg := range args {
 			var err error
-			result, err = c.evalArgs(i == 0, argRefs, result)
-			if err != nil {
-				c.debug("%s: visitPipeNode: evalArgs: %s", c.position(cmd.Position()), err)
-				invalid = true
-				result = nil
+			argRefs[i], err = c.visitArg(env, arg)
+			_ = err // TODO
+		}
+		if len(args) == 1 {
+			return argRefs[0], nil
+		} else {
+			c.debug("TODO: visitArgs: not implemented: %v", args)
+		}
+
+	case *parse.VariableNode:
+		if len(args) == 1 {
+			if first.Ident[0] == "$" {
+				return c.visitField(env.Root(), first.Ident[1:]), nil
+			}
+		} else {
+			c.debug("TODO: visitArgs: not implemented: %s", first)
+		}
+
+	case *parse.IdentifierNode:
+		switch first.Ident {
+		case "index":
+			c.debug("index. args = %v", args)
+			if len(args) == 3 {
+				m, err := c.visitArg(env, args[1])
+				if err != nil {
+					return nil, err
+				}
+				_, err = c.visitArg(env, args[2])
+				if err != nil {
+					return nil, err
+				}
+				// (index .Map .Key) -> indexValueOf(.Map, .Key), whose path := ".Map[]"
+				// k.typeConstraint += typeSpec{kind: typeSpecRangeKeyOf, ref: m}
+				rangeValueRef := &templateRef{
+					root: env.Root(),
+					Path: m.Path + "[]",
+					TypeSource: typeSpec{
+						Kind: typeSpecKindRangeValueOf,
+						ref:  m,
+					},
+				}
+				m.Children["[]"] = rangeValueRef
+
+				return rangeValueRef, nil
 			}
 		}
 	}
 
-	return result
+	return nil, fmt.Errorf("TODO (first = %T)", first)
 }
 
 // {{.Foo}} -> fieldRef("Foo") -> type: field(.Foo)
@@ -476,57 +548,47 @@ func (c *Checker) evalArgs(first bool, argRefs []*templateRef, prevRef *template
 	return nil, fmt.Errorf("evalArgs: not implemented")
 }
 
+func (c *Checker) visitField(env *templateRef, path []string) *templateRef {
+	cur := env
+	for _, ident := range path {
+		if _, ok := cur.Children[ident]; !ok {
+			path := cur.Path
+			if env.ExpectedRangable {
+				path += "[]"
+			}
+			if cur.Children == nil {
+				cur.Children = map[string]*templateRef{}
+			}
+			cur.Children[ident] = &templateRef{
+				Path:     path + "." + ident,
+				Pos:      cur.Pos,
+				Children: map[string]*templateRef{},
+				root:     env.Root(),
+			}
+		}
+		cur = cur.Children[ident]
+	}
+	return cur
+}
+
 func (c *Checker) visitArg(env *templateRef, arg parse.Node) (*templateRef, error) {
 	switch arg := arg.(type) {
 	case *parse.FieldNode:
-		cur := env
-		for _, ident := range arg.Ident {
-			if _, ok := cur.Children[ident]; !ok {
-				path := cur.Path
-				if env.ExpectedRangable {
-					path += "[]"
-				}
-				cur.Children[ident] = &templateRef{
-					Path:     path + "." + ident,
-					Pos:      arg.Pos,
-					Children: map[string]*templateRef{},
-					root:     env.Root(),
-				}
-			}
-			cur = cur.Children[ident]
-		}
-		return cur, nil
+		return c.visitField(env, arg.Ident), nil
 
 	case *parse.DotNode:
 		return env, nil
 
 	case *parse.VariableNode:
 		if arg.Ident[0] == "$" {
-			cur := env.Root()
-			for _, ident := range arg.Ident[1:] {
-				if _, ok := cur.Children[ident]; !ok {
-					path := cur.Path
-					if env.ExpectedRangable {
-						path += "[]"
-					}
-					cur.Children[ident] = &templateRef{
-						Path:     path + "." + ident,
-						Pos:      arg.Pos,
-						Children: map[string]*templateRef{},
-						root:     env.Root(),
-					}
-				}
-				cur = cur.Children[ident]
-			}
-			return cur, nil
+			return c.visitField(env.Root(), arg.Ident[1:]), nil
 		}
 
 	case *parse.PipeNode:
 		c.visitPipeNode(env, arg)
 
 	case *parse.IdentifierNode:
-		c.debug("%s: visitPipeNode:     TODO: IdentifierNode: %s", c.position(arg.Position()), arg.Ident)
-		// ignore for now
+		// TODO
 
 	case *parse.NilNode, *parse.NumberNode, *parse.BoolNode, *parse.StringNode:
 		// TODO
