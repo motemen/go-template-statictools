@@ -8,10 +8,19 @@ import (
 )
 
 type Dot1 struct {
-	Foo     string
-	Nested1 struct {
-		Nested2 bool
-	}
+	Foo   string
+	Inner Dot1Inner
+	Slice []Dot1ContainedValue
+	Map   map[string]Dot1ContainedValue
+}
+
+type Dot1Inner struct {
+	Inner      bool
+	InnerField int
+}
+
+type Dot1ContainedValue struct {
+	Value bool
 }
 
 func TestCheck(t *testing.T) {
@@ -48,8 +57,72 @@ func TestCheck(t *testing.T) {
 		{
 			"nested field", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
-{{.Nested1.Nested2}}`,
+{{.Inner.Inner}}`,
 			"",
+		},
+		{
+			"nested field, no existent", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{.Inner.Inner.Inner}}`,
+			"can't evaluate field Inner in type bool",
+		},
+		{
+			"with", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{with .Inner}}{{.Inner}}{{end}}`,
+			"",
+		},
+		{
+			"with, invalid", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{with .Inner}}{{.Invalid}}{{end}}`,
+			"can't evaluate field Invalid in type github.com/motemen/go-template-statictools/templatetypes.Dot1Inner",
+		},
+		{
+			"with, type annotation inside", `
+{{with .Inner}}
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1Inner */}}
+{{.InnerField}}
+{{end}}`,
+			"",
+		},
+		{
+			"with, type annotation inside", `
+{{with .Inner}}
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1Inner */}}
+{{.NonExistent}}
+{{end}}`,
+			"can't evaluate field NonExistent in type github.com/motemen/go-template-statictools/templatetypes.Dot1Inner",
+		},
+		{
+			"range", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{range .Slice}}{{.Value}}{{end}}`,
+			"",
+		},
+		{
+			"range error", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{range .Foo}}{{.Value}}{{end}}`,
+			"range can't iterate over github.com/motemen/go-template-statictools/templatetypes.Dot1",
+		},
+		{
+			"index", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{index .Map "foo"}}`,
+			"",
+		},
+		{
+			"index", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{(index .Map "foo").Value}}`,
+			"",
+		},
+		{
+			"index", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{(index .Map "foo").InvalidKey}}`,
+			"can't evaluate field InvalidKey in type github.com/motemen/go-template-statictools/templatetypes.Dot1ContainedValue",
 		},
 	}
 
