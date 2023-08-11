@@ -215,6 +215,10 @@ func (s *state) checkFunction(dot types.Type, node *parse.IdentifierNode, cmd pa
 		_ = s.checkArg(dot, args[2])
 		// TODO: check keyTypeOf(a1) == a2
 		return valueTypeOf(a1)
+
+	case "len":
+		_ = s.checkArg(dot, args[1])
+		return types.Typ[types.Int]
 	}
 
 	s.TODO("checkFunction: node=%s cmd=%s args=%s", node, cmd, args)
