@@ -1,8 +1,8 @@
 package templatetypes
 
 import (
+	"strings"
 	"testing"
-	"text/template/parse"
 
 	"gotest.tools/v3/assert"
 )
@@ -12,6 +12,7 @@ type Dot1 struct {
 	Inner Dot1Inner
 	Slice []Dot1ContainedValue
 	Map   map[string]Dot1ContainedValue
+	Func1 func(n int, s string) FuncResult
 }
 
 type Dot1Inner struct {
@@ -21,6 +22,10 @@ type Dot1Inner struct {
 
 type Dot1ContainedValue struct {
 	Value bool
+}
+
+type FuncResult struct {
+	ResultField string
 }
 
 func TestCheck(t *testing.T) {
@@ -107,19 +112,19 @@ func TestCheck(t *testing.T) {
 			"range can't iterate over github.com/motemen/go-template-statictools/templatetypes.Dot1",
 		},
 		{
-			"index", `
+			"builtin function index", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
 {{index .Map "foo"}}`,
 			"",
 		},
 		{
-			"index", `
+			"builtin function index", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
 {{(index .Map "foo").Value}}`,
 			"",
 		},
 		{
-			"index", `
+			"builtin function index", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
 {{(index .Map "foo").InvalidKey}}`,
 			"can't evaluate field InvalidKey in type github.com/motemen/go-template-statictools/templatetypes.Dot1ContainedValue",
@@ -156,19 +161,25 @@ func TestCheck(t *testing.T) {
 {{template "subtemplate" .Inner}}`,
 			"can't evaluate field InvalidKey in type github.com/motemen/go-template-statictools/templatetypes.Dot1Inner",
 		},
+		{
+			"with else", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{with .Inner}}
+  {{.InnerField}}
+{{else}}
+  {{.InnerField}}
+{{end}}`,
+			"can't evaluate field InnerField in type github.com/motemen/go-template-statictools/templatetypes.Dot1",
+		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			tree := &parse.Tree{
-				Mode: parse.ParseComments | parse.SkipFuncCheck,
-			}
-
-			treeMap := map[string]*parse.Tree{}
-			_, err := tree.Parse(test.template, "", "", treeMap)
+			var s Checker
+			err := s.Parse(strings.NewReader(test.template))
 			assert.NilError(t, err)
 
-			err = Check(tree, treeMap)
+			err = s.Check()
 			if test.errorMessage == "" {
 				assert.NilError(t, err)
 			} else {

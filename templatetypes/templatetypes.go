@@ -1,9 +1,12 @@
 package templatetypes
 
 import (
+	"bytes"
 	"fmt"
 	"go/types"
+	"io"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"text/template/parse"
@@ -13,11 +16,13 @@ import (
 	"go.uber.org/multierr"
 )
 
-type state struct {
-	Types   map[parse.Node]types.Type
-	Errors  []error
-	Vars    []variable
-	TreeMap map[string]*parse.Tree
+type Checker struct {
+	filename string
+	content  []byte
+	errors   []error
+	vars     []variable
+	tree     *parse.Tree
+	treeMap  map[string]*parse.Tree
 }
 
 type variable struct {
@@ -25,23 +30,23 @@ type variable struct {
 	typ  types.Type
 }
 
-func (s *state) setTopVarType(typ types.Type) {
-	if len(s.Vars) == 1 && s.Vars[0].name == "$" {
-		s.Vars[0].typ = typ
+func (s *Checker) setTopVarType(typ types.Type) {
+	if len(s.vars) == 1 && s.vars[0].name == "$" {
+		s.vars[0].typ = typ
 	}
 }
 
-func (s *state) varType(name string) types.Type {
-	for i := len(s.Vars) - 1; i >= 0; i-- {
-		if s.Vars[i].name == name {
-			return s.Vars[i].typ
+func (s *Checker) varType(name string) (types.Type, error) {
+	for i := len(s.vars) - 1; i >= 0; i-- {
+		if s.vars[i].name == name {
+			return s.vars[i].typ, nil
 		}
 	}
-	s.errorf("undefined variable: %s", name)
-	return nil
+	return nil, fmt.Errorf("undefined variable: %s", name)
 }
 
 type TypeCheckError struct {
+	Pos     parse.Pos
 	Message string
 }
 
@@ -54,7 +59,7 @@ var rxAnnotation = regexp.MustCompile(`^/\*\s*@(\w+)\s+(.*?)\s*\*/$`)
 
 // walk walks node.
 // It returns new dot type. Only if @type annotation is given, the type will change.
-func (s *state) walk(dot types.Type, node parse.Node) types.Type {
+func (s *Checker) walk(dot types.Type, node parse.Node) types.Type {
 	if node == nil {
 		return dot
 	}
@@ -76,10 +81,10 @@ func (s *state) walk(dot types.Type, node parse.Node) types.Type {
 					Tests: true, // FIXME: this is only for testing purpose
 				}, pkgName)
 				if err != nil {
-					s.errorf("failed to load package %q: %v", pkgName, err)
+					s.errorf(node, "failed to load package %q: %v", pkgName, err)
 				}
 				if pkgs[0].Errors != nil {
-					s.errorf("failed to load package %q: %v", pkgName, pkgs[0].Errors)
+					s.errorf(node, "failed to load package %q: %v", pkgName, pkgs[0].Errors)
 				}
 				for _, pkg := range pkgs {
 					obj := pkg.Types.Scope().Lookup(typeName)
@@ -90,7 +95,7 @@ func (s *state) walk(dot types.Type, node parse.Node) types.Type {
 					s.setTopVarType(obj.Type())
 					return obj.Type()
 				}
-				s.errorf("cannot load type %s.%s", pkgName, typeName)
+				s.errorf(node, "cannot load type %s.%s", pkgName, typeName)
 			}
 		}
 
@@ -123,18 +128,18 @@ func (s *state) walk(dot types.Type, node parse.Node) types.Type {
 	case *parse.TextNode:
 
 	default:
-		s.TODO("walk: not implemented: %s (%T)", node, node)
+		s.TODO(node, "walk: not implemented: %s (%T)", node, node)
 	}
 
 	return dot
 }
 
-func (s *state) walkIfOrWith(nodeType parse.NodeType, dot types.Type, pipe *parse.PipeNode, list, elseList *parse.ListNode) {
+func (s *Checker) walkIfOrWith(nodeType parse.NodeType, dot types.Type, pipe *parse.PipeNode, list, elseList *parse.ListNode) {
 	switch nodeType {
 	case parse.NodeWith:
 		newDot := s.checkPipeline(dot, pipe)
 		s.walk(newDot, list)
-		s.walk(newDot, elseList)
+		s.walk(dot, elseList)
 	case parse.NodeIf:
 		s.walk(dot, list)
 		s.walk(dot, elseList)
@@ -143,8 +148,8 @@ func (s *state) walkIfOrWith(nodeType parse.NodeType, dot types.Type, pipe *pars
 	}
 }
 
-func (s *state) walkRange(dot types.Type, r *parse.RangeNode) {
-	typ := peel(s.checkPipeline(dot, r.Pipe))
+func (s *Checker) walkRange(dot types.Type, r *parse.RangeNode) {
+	typ := peelType(s.checkPipeline(dot, r.Pipe))
 
 	// TODO: assign
 	switch typ := typ.(type) {
@@ -161,28 +166,29 @@ func (s *state) walkRange(dot types.Type, r *parse.RangeNode) {
 	case *types.Chan:
 		// TODO
 	default:
-		s.errorf("range can't iterate over %v", dot)
+		s.errorf(r, "range can't iterate over %v", dot)
+		return
 	}
 
-	s.TODO("walkRange: %s", typ)
+	s.TODO(r, "walkRange: %s", typ)
 }
 
-func (s *state) walkTemplate(dot types.Type, t *parse.TemplateNode) {
-	tree := s.TreeMap[t.Name]
+func (s *Checker) walkTemplate(dot types.Type, t *parse.TemplateNode) {
+	tree := s.treeMap[t.Name]
 	if tree == nil {
-		s.errorf("template %q not defined", t.Name)
+		s.errorf(t, "template %q not defined", t.Name)
 		return
 	}
 
 	dot = s.checkPipeline(dot, t.Pipe)
 	newState := *s
-	newState.Vars = []variable{{"$", dot}}
-	newState.Errors = nil
+	newState.vars = []variable{{"$", dot}}
+	newState.errors = nil
 	newState.walk(dot, tree.Root)
-	s.Errors = append(s.Errors, newState.Errors...)
+	s.errors = append(s.errors, newState.errors...)
 }
 
-func (s *state) checkPipeline(dot types.Type, pipe *parse.PipeNode) (final types.Type) {
+func (s *Checker) checkPipeline(dot types.Type, pipe *parse.PipeNode) (final types.Type) {
 	if pipe == nil {
 		return
 	}
@@ -195,7 +201,7 @@ func (s *state) checkPipeline(dot types.Type, pipe *parse.PipeNode) (final types
 }
 
 // ref. text/template.state.evalCommand()
-func (s *state) checkCommand(dot types.Type, cmd *parse.CommandNode, final types.Type) types.Type {
+func (s *Checker) checkCommand(dot types.Type, cmd *parse.CommandNode, final types.Type) types.Type {
 	firstWord := cmd.Args[0]
 	switch n := firstWord.(type) {
 	case *parse.FieldNode:
@@ -220,37 +226,43 @@ func (s *state) checkCommand(dot types.Type, cmd *parse.CommandNode, final types
 		return dot
 	}
 
-	s.TODO("checkCommand: %s (%T)", firstWord, firstWord)
+	s.TODO(cmd, "checkCommand: %s (%T)", firstWord, firstWord)
 
 	return nil
 }
 
-func (s *state) checkFieldNode(dot types.Type, field *parse.FieldNode, args []parse.Node, final types.Type) types.Type {
+func (s *Checker) checkFieldNode(dot types.Type, field *parse.FieldNode, args []parse.Node, final types.Type) types.Type {
 	return s.checkFieldChain(dot, dot, field, field.Ident, args, final)
 }
 
-func (s *state) checkChainNode(dot types.Type, chain *parse.ChainNode, args []parse.Node, final types.Type) types.Type {
+func (s *Checker) checkChainNode(dot types.Type, chain *parse.ChainNode, args []parse.Node, final types.Type) types.Type {
 	if len(chain.Field) == 0 {
-		s.errorf("internal error: no fields in evalChainNode")
+		s.errorf(chain, "internal error: no fields in checkChainNode")
+		return nil
 	}
 	if chain.Node.Type() == parse.NodeNil {
-		s.errorf("indirection through explicit nil in %s", chain)
+		s.errorf(chain, "indirection through explicit nil in %s", chain)
+		return nil
 	}
 	// (pipe).Field1.Field2 has pipe as .Node, fields as .Field. Eval the pipeline, then the fields.
 	pipe := s.checkArg(dot, chain.Node)
 	return s.checkFieldChain(dot, pipe, chain, chain.Field, args, final)
 }
 
-func (s *state) checkVariableNode(dot types.Type, variable *parse.VariableNode, args []parse.Node, final types.Type) types.Type {
+func (s *Checker) checkVariableNode(dot types.Type, variable *parse.VariableNode, args []parse.Node, final types.Type) types.Type {
 	// $x.Field has $x as the first ident, Field as the second. Eval the var, then the fields.
-	typ := s.varType(variable.Ident[0])
+	typ, err := s.varType(variable.Ident[0])
+	if err != nil {
+		s.errorf(variable, "%s", err)
+		return nil
+	}
 	if len(variable.Ident) == 1 {
 		return typ
 	}
 	return s.checkFieldChain(dot, typ, variable, variable.Ident[1:], args, final)
 }
 
-func (s *state) checkFieldChain(dot, receiver types.Type, node parse.Node, ident []string, args []parse.Node, final types.Type) types.Type {
+func (s *Checker) checkFieldChain(dot, receiver types.Type, node parse.Node, ident []string, args []parse.Node, final types.Type) types.Type {
 	n := len(ident)
 	for i := 0; i < n-1; i++ {
 		receiver = s.checkField(dot, ident[i], node, nil, nil, receiver)
@@ -259,7 +271,7 @@ func (s *state) checkFieldChain(dot, receiver types.Type, node parse.Node, ident
 	return s.checkField(dot, ident[n-1], node, args, final, receiver)
 }
 
-func (s *state) checkFunction(dot types.Type, node *parse.IdentifierNode, cmd parse.Node, args []parse.Node, final types.Type) types.Type {
+func (s *Checker) checkFunction(dot types.Type, node *parse.IdentifierNode, cmd parse.Node, args []parse.Node, final types.Type) types.Type {
 	// TODO
 	name := node.Ident
 
@@ -273,14 +285,15 @@ func (s *state) checkFunction(dot types.Type, node *parse.IdentifierNode, cmd pa
 	case "len":
 		_ = s.checkArg(dot, args[1])
 		return types.Typ[types.Int]
+
 	}
 
-	s.TODO("checkFunction: node=%s cmd=%s args=%s", node, cmd, args)
+	s.TODO(node, "checkFunction: cmd=%s args=%s", cmd, args)
 
 	return nil
 }
 
-func (s *state) checkField(dot types.Type, fieldName string, node parse.Node, args []parse.Node, final types.Type, receiver types.Type) types.Type {
+func (s *Checker) checkField(dot types.Type, fieldName string, node parse.Node, args []parse.Node, final types.Type, receiver types.Type) types.Type {
 	if receiver == nil {
 		return nil
 	}
@@ -290,7 +303,7 @@ func (s *state) checkField(dot types.Type, fieldName string, node parse.Node, ar
 	origReceiver := receiver
 	hasArgs := len(args) > 1 || final != nil
 
-	receiver = peel(receiver)
+	receiver = peelType(receiver)
 
 	switch receiver := receiver.(type) {
 	case *types.Struct:
@@ -299,7 +312,7 @@ func (s *state) checkField(dot types.Type, fieldName string, node parse.Node, ar
 			if f.Name() == fieldName {
 				if hasArgs {
 					// FIXME
-					s.errorf("method %q does not take any arguments", fieldName)
+					s.errorf(node, "method %q does not take any arguments", fieldName)
 				}
 				return f.Type()
 			}
@@ -313,11 +326,11 @@ func (s *state) checkField(dot types.Type, fieldName string, node parse.Node, ar
 
 	}
 
-	s.errorf("can't evaluate field %s in type %v", fieldName, origReceiver)
+	s.errorf(node, "can't evaluate field %s in type %v", fieldName, origReceiver)
 	return nil
 }
 
-func (s *state) checkArg(dot types.Type, n parse.Node) types.Type {
+func (s *Checker) checkArg(dot types.Type, n parse.Node) types.Type {
 	// TODO
 	switch arg := n.(type) {
 	case *parse.DotNode:
@@ -330,27 +343,40 @@ func (s *state) checkArg(dot types.Type, n parse.Node) types.Type {
 		return s.checkVariableNode(dot, arg, nil, nil)
 	case *parse.PipeNode:
 		return s.checkPipeline(dot, arg)
+	case *parse.IdentifierNode:
+		return s.checkFunction(dot, arg, arg, nil, nil)
+	case *parse.ChainNode:
+		return s.checkChainNode(dot, arg, nil, nil)
+
+	case *parse.StringNode:
+		return types.Typ[types.String]
 	}
 
-	s.TODO("checkArg: %q (%T)", n, n)
+	s.TODO(n, "checkArg: %q (%T)", n, n)
 
 	return dot
 }
 
-func (s *state) TODO(format string, args ...any) {
-	log.Printf("TODO: "+format, args...)
+func (s *Checker) TODO(node parse.Node, format string, args ...any) {
+	s.debugf(node, "TODO: "+format, args...)
 }
 
-func (s *state) debugf(format string, args ...any) {
-	log.Printf("debug: "+format, args...)
+func (s *Checker) debugf(node parse.Node, format string, args ...any) {
+	if node == nil {
+		log.Printf("debug: "+format, args...)
+	} else {
+		log.Printf("%s: debug: "+format, append([]any{s.position(node.Position())}, args...)...)
+	}
 }
 
-func (s *state) errorf(format string, args ...interface{}) {
-	log.Printf("error: "+format, args...)
-	s.Errors = append(s.Errors, TypeCheckError{fmt.Sprintf(format, args...)})
+func (s *Checker) errorf(node parse.Node, format string, args ...interface{}) {
+	s.errors = append(s.errors, TypeCheckError{
+		Pos:     node.Position(),
+		Message: fmt.Sprintf(format, args...),
+	})
 }
 
-func peel(typ types.Type) types.Type {
+func peelType(typ types.Type) types.Type {
 	for {
 		switch t := typ.(type) {
 		case *types.Pointer:
@@ -381,14 +407,72 @@ func valueTypeOf(typ types.Type) types.Type {
 	return nil
 }
 
-func Check(tree *parse.Tree, treeMap map[string]*parse.Tree) (err error) {
-	s := &state{
-		Vars: []variable{
-			{name: "$", typ: nil},
-		},
-		TreeMap: treeMap,
-	}
-	s.walk(nil, tree.Root)
+func (s *Checker) position(pos parse.Pos) string {
+	n := int(pos)
+	content := s.content[:n]
+	nl := bytes.LastIndexByte(content, '\n')
 
-	return multierr.Combine(s.Errors...)
+	col := n - nl
+	line := 1 + bytes.Count(content, []byte{'\n'})
+	filename := s.filename
+	if filename == "" {
+		filename = "-"
+	}
+	return fmt.Sprintf("%s:%d:%d", filename, line, col)
+}
+
+func (s *Checker) FormatError(err error) string {
+	if te, ok := err.(TypeCheckError); ok {
+		return fmt.Sprintf("%s: %s", s.position(te.Pos), te.Message)
+	} else {
+		return err.Error()
+	}
+}
+
+func (s *Checker) ParseFile(filename string) error {
+	f, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+
+	s.filename = filename
+
+	return s.Parse(f)
+}
+
+func (s *Checker) Parse(r io.Reader) error {
+	tree := &parse.Tree{
+		Mode: parse.ParseComments | parse.SkipFuncCheck,
+	}
+	treeMap := map[string]*parse.Tree{}
+
+	content, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	_, err = tree.Parse(string(content), "", "", treeMap)
+	if err != nil {
+		return err
+	}
+
+	s.content = content
+	s.treeMap = treeMap
+	s.tree = tree
+
+	return nil
+}
+
+func (s *Checker) Check() error {
+	if s.content == nil {
+		panic("call Parse first")
+	}
+
+	for _, tree := range s.treeMap {
+		s.vars = []variable{
+			{name: "$", typ: nil},
+		}
+		s.walk(nil, tree.Root)
+	}
+
+	return multierr.Combine(s.errors...)
 }
