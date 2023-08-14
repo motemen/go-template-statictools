@@ -176,7 +176,7 @@ func TestCheck(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var s Checker
-			err := s.Parse(strings.NewReader(test.template))
+			err := s.Parse("", strings.NewReader(test.template))
 			assert.NilError(t, err)
 
 			err = s.Check()

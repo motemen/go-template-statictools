@@ -1,7 +1,6 @@
 package templatetypes
 
 import (
-	"bytes"
 	"fmt"
 	"go/types"
 	"io"
@@ -17,12 +16,9 @@ import (
 )
 
 type Checker struct {
-	filename string
-	content  []byte
-	errors   []error
-	vars     []variable
-	tree     *parse.Tree
-	treeMap  map[string]*parse.Tree
+	errors  []error
+	vars    []variable
+	treeSet map[string]*parse.Tree
 }
 
 type variable struct {
@@ -46,7 +42,7 @@ func (s *Checker) varType(name string) (types.Type, error) {
 }
 
 type TypeCheckError struct {
-	Pos     parse.Pos
+	Node    parse.Node
 	Message string
 }
 
@@ -174,7 +170,7 @@ func (s *Checker) walkRange(dot types.Type, r *parse.RangeNode) {
 }
 
 func (s *Checker) walkTemplate(dot types.Type, t *parse.TemplateNode) {
-	tree := s.treeMap[t.Name]
+	tree := s.treeSet[t.Name]
 	if tree == nil {
 		s.errorf(t, "template %q not defined", t.Name)
 		return
@@ -365,13 +361,14 @@ func (s *Checker) debugf(node parse.Node, format string, args ...any) {
 	if node == nil {
 		log.Printf("debug: "+format, args...)
 	} else {
-		log.Printf("%s: debug: "+format, append([]any{s.position(node.Position())}, args...)...)
+		loc, context := s.diagContext(node)
+		log.Printf("%s: debug: in %s: "+format, append([]any{loc, context}, args...)...)
 	}
 }
 
 func (s *Checker) errorf(node parse.Node, format string, args ...interface{}) {
 	s.errors = append(s.errors, TypeCheckError{
-		Pos:     node.Position(),
+		Node:    node,
 		Message: fmt.Sprintf(format, args...),
 	})
 }
@@ -407,23 +404,14 @@ func valueTypeOf(typ types.Type) types.Type {
 	return nil
 }
 
-func (s *Checker) position(pos parse.Pos) string {
-	n := int(pos)
-	content := s.content[:n]
-	nl := bytes.LastIndexByte(content, '\n')
-
-	col := n - nl
-	line := 1 + bytes.Count(content, []byte{'\n'})
-	filename := s.filename
-	if filename == "" {
-		filename = "-"
-	}
-	return fmt.Sprintf("%s:%d:%d", filename, line, col)
+func (s *Checker) diagContext(node parse.Node) (loc, context string) {
+	return (*parse.Tree).ErrorContext(nil, node)
 }
 
 func (s *Checker) FormatError(err error) string {
 	if te, ok := err.(TypeCheckError); ok {
-		return fmt.Sprintf("%s: %s", s.position(te.Pos), te.Message)
+		loc, context := s.diagContext(te.Node)
+		return fmt.Sprintf("%s: in %s: %s", loc, context, te.Message)
 	} else {
 		return err.Error()
 	}
@@ -435,39 +423,32 @@ func (s *Checker) ParseFile(filename string) error {
 		return err
 	}
 
-	s.filename = filename
-
-	return s.Parse(f)
+	return s.Parse(filename, f)
 }
 
-func (s *Checker) Parse(r io.Reader) error {
-	tree := &parse.Tree{
-		Mode: parse.ParseComments | parse.SkipFuncCheck,
-	}
-	treeMap := map[string]*parse.Tree{}
+func (s *Checker) Parse(name string, r io.Reader) error {
+	tree := parse.New(name)
+	tree.Mode = parse.ParseComments | parse.SkipFuncCheck
+
+	treeSet := map[string]*parse.Tree{}
 
 	content, err := io.ReadAll(r)
 	if err != nil {
 		return err
 	}
-	_, err = tree.Parse(string(content), "", "", treeMap)
+
+	_, err = tree.Parse(string(content), "", "", treeSet)
 	if err != nil {
 		return err
 	}
 
-	s.content = content
-	s.treeMap = treeMap
-	s.tree = tree
+	s.treeSet = treeSet
 
 	return nil
 }
 
 func (s *Checker) Check() error {
-	if s.content == nil {
-		panic("call Parse first")
-	}
-
-	for _, tree := range s.treeMap {
+	for _, tree := range s.treeSet {
 		s.vars = []variable{
 			{name: "$", typ: nil},
 		}
