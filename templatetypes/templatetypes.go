@@ -14,8 +14,31 @@ import (
 )
 
 type state struct {
-	Types  map[parse.Node]types.Type
-	Errors []error
+	Types   map[parse.Node]types.Type
+	Errors  []error
+	Vars    []variable
+	TreeMap map[string]*parse.Tree
+}
+
+type variable struct {
+	name string
+	typ  types.Type
+}
+
+func (s *state) setTopVarType(typ types.Type) {
+	if len(s.Vars) == 1 && s.Vars[0].name == "$" {
+		s.Vars[0].typ = typ
+	}
+}
+
+func (s *state) varType(name string) types.Type {
+	for i := len(s.Vars) - 1; i >= 0; i-- {
+		if s.Vars[i].name == name {
+			return s.Vars[i].typ
+		}
+	}
+	s.errorf("undefined variable: %s", name)
+	return nil
 }
 
 type TypeCheckError struct {
@@ -29,13 +52,18 @@ func (e TypeCheckError) Error() string {
 // {{/* @key value */}}
 var rxAnnotation = regexp.MustCompile(`^/\*\s*@(\w+)\s+(.*?)\s*\*/$`)
 
-func (s *state) walk(dot *types.Type, node parse.Node) {
+// walk walks node.
+// It returns new dot type. Only if @type annotation is given, the type will change.
+func (s *state) walk(dot types.Type, node parse.Node) types.Type {
 	if node == nil {
-		return
+		return dot
 	}
 
 	switch node := node.(type) {
 	case *parse.CommentNode:
+		// Special case for static analysis.
+		// If the comment is the form /* @type: <fullType> */,
+		// The dot type is annotated as fullType.
 		m := rxAnnotation.FindStringSubmatch(node.Text)
 		if m != nil {
 			key, value := m[1], m[2]
@@ -58,28 +86,29 @@ func (s *state) walk(dot *types.Type, node parse.Node) {
 					if obj == nil {
 						continue
 					}
-					*dot = obj.Type()
-					return
+					// TODO: compare dot with obj.Type()
+					s.setTopVarType(obj.Type())
+					return obj.Type()
 				}
 				s.errorf("cannot load type %s.%s", pkgName, typeName)
 			}
 		}
 
 	case *parse.ActionNode:
-		s.checkPipeline(*dot, node.Pipe)
+		s.checkPipeline(dot, node.Pipe)
 
 	case *parse.BreakNode, *parse.ContinueNode:
-		return
+		return dot
 
 	case *parse.IfNode:
 		s.walkIfOrWith(parse.NodeIf, dot, node.Pipe, node.List, node.ElseList)
 
 	case *parse.ListNode:
 		if node == nil {
-			return
+			return dot
 		}
 		for _, node := range node.Nodes {
-			s.walk(dot, node)
+			dot = s.walk(dot, node)
 		}
 
 	case *parse.RangeNode:
@@ -96,14 +125,16 @@ func (s *state) walk(dot *types.Type, node parse.Node) {
 	default:
 		s.TODO("walk: not implemented: %s (%T)", node, node)
 	}
+
+	return dot
 }
 
-func (s *state) walkIfOrWith(nodeType parse.NodeType, dot *types.Type, pipe *parse.PipeNode, list, elseList *parse.ListNode) {
+func (s *state) walkIfOrWith(nodeType parse.NodeType, dot types.Type, pipe *parse.PipeNode, list, elseList *parse.ListNode) {
 	switch nodeType {
 	case parse.NodeWith:
-		newDot := s.checkPipeline(*dot, pipe)
-		s.walk(&newDot, list)
-		s.walk(&newDot, elseList)
+		newDot := s.checkPipeline(dot, pipe)
+		s.walk(newDot, list)
+		s.walk(newDot, elseList)
 	case parse.NodeIf:
 		s.walk(dot, list)
 		s.walk(dot, elseList)
@@ -112,32 +143,43 @@ func (s *state) walkIfOrWith(nodeType parse.NodeType, dot *types.Type, pipe *par
 	}
 }
 
-func (s *state) walkRange(dot *types.Type, r *parse.RangeNode) {
-	typ := peel(s.checkPipeline(*dot, r.Pipe))
+func (s *state) walkRange(dot types.Type, r *parse.RangeNode) {
+	typ := peel(s.checkPipeline(dot, r.Pipe))
+
 	// TODO: assign
 	switch typ := typ.(type) {
 	case *types.Slice:
 		elemType := typ.Elem()
-		s.walk(&elemType, r.List)
+		_ = s.walk(elemType, r.List)
 		return
 	case *types.Array:
 		elemType := typ.Elem()
-		s.walk(&elemType, r.List)
+		_ = s.walk(elemType, r.List)
 		return
 	case *types.Map:
 		// TODO
 	case *types.Chan:
 		// TODO
 	default:
-		s.errorf("range can't iterate over %v", *dot)
+		s.errorf("range can't iterate over %v", dot)
 	}
 
 	s.TODO("walkRange: %s", typ)
 }
 
-func (s *state) walkTemplate(dot *types.Type, t *parse.TemplateNode) {
-	// TODO
-	s.TODO("not implemted: walkTemplate: %s", t)
+func (s *state) walkTemplate(dot types.Type, t *parse.TemplateNode) {
+	tree := s.TreeMap[t.Name]
+	if tree == nil {
+		s.errorf("template %q not defined", t.Name)
+		return
+	}
+
+	dot = s.checkPipeline(dot, t.Pipe)
+	newState := *s
+	newState.Vars = []variable{{"$", dot}}
+	newState.Errors = nil
+	newState.walk(dot, tree.Root)
+	s.Errors = append(s.Errors, newState.Errors...)
 }
 
 func (s *state) checkPipeline(dot types.Type, pipe *parse.PipeNode) (final types.Type) {
@@ -167,6 +209,9 @@ func (s *state) checkCommand(dot types.Type, cmd *parse.CommandNode, final types
 
 	case *parse.PipeNode:
 		return s.checkPipeline(dot, n)
+
+	case *parse.VariableNode:
+		return s.checkVariableNode(dot, n, cmd.Args, final)
 	}
 
 	// TODO: notAFunction
@@ -194,6 +239,15 @@ func (s *state) checkChainNode(dot types.Type, chain *parse.ChainNode, args []pa
 	// (pipe).Field1.Field2 has pipe as .Node, fields as .Field. Eval the pipeline, then the fields.
 	pipe := s.checkArg(dot, chain.Node)
 	return s.checkFieldChain(dot, pipe, chain, chain.Field, args, final)
+}
+
+func (s *state) checkVariableNode(dot types.Type, variable *parse.VariableNode, args []parse.Node, final types.Type) types.Type {
+	// $x.Field has $x as the first ident, Field as the second. Eval the var, then the fields.
+	typ := s.varType(variable.Ident[0])
+	if len(variable.Ident) == 1 {
+		return typ
+	}
+	return s.checkFieldChain(dot, typ, variable, variable.Ident[1:], args, final)
 }
 
 func (s *state) checkFieldChain(dot, receiver types.Type, node parse.Node, ident []string, args []parse.Node, final types.Type) types.Type {
@@ -272,6 +326,8 @@ func (s *state) checkArg(dot types.Type, n parse.Node) types.Type {
 		return types.Typ[types.UntypedNil]
 	case *parse.FieldNode:
 		return s.checkFieldNode(dot, arg, []parse.Node{n}, nil)
+	case *parse.VariableNode:
+		return s.checkVariableNode(dot, arg, nil, nil)
 	case *parse.PipeNode:
 		return s.checkPipeline(dot, arg)
 	}
@@ -325,10 +381,14 @@ func valueTypeOf(typ types.Type) types.Type {
 	return nil
 }
 
-func Check(tree *parse.Tree) (err error) {
-	var dot types.Type
-	s := &state{}
-	s.walk(&dot, tree.Root)
+func Check(tree *parse.Tree, treeMap map[string]*parse.Tree) (err error) {
+	s := &state{
+		Vars: []variable{
+			{name: "$", typ: nil},
+		},
+		TreeMap: treeMap,
+	}
+	s.walk(nil, tree.Root)
 
 	return multierr.Combine(s.Errors...)
 }

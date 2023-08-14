@@ -124,6 +124,38 @@ func TestCheck(t *testing.T) {
 {{(index .Map "foo").InvalidKey}}`,
 			"can't evaluate field InvalidKey in type github.com/motemen/go-template-statictools/templatetypes.Dot1ContainedValue",
 		},
+		{
+			"with, type annotation inside", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{with .Inner}}
+  {{.InnerField}}
+  {{$.Inner.InnerField}}
+{{end}}`,
+			"",
+		},
+		{
+			"with, type annotation inside", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{with .Inner}}
+  {{.InnerField}}
+  {{$.InvalidKey}}
+{{end}}`,
+			"can't evaluate field InvalidKey in type github.com/motemen/go-template-statictools/templatetypes.Dot1",
+		},
+		{
+			"template", `
+{{define "subtemplate"}}{{.InnerField}}{{end}}
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{template "subtemplate" .Inner}}`,
+			"",
+		},
+		{
+			"template error", `
+{{define "subtemplate"}}{{.InvalidKey}}{{end}}
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{template "subtemplate" .Inner}}`,
+			"can't evaluate field InvalidKey in type github.com/motemen/go-template-statictools/templatetypes.Dot1Inner",
+		},
 	}
 
 	for _, test := range tests {
@@ -132,10 +164,11 @@ func TestCheck(t *testing.T) {
 				Mode: parse.ParseComments | parse.SkipFuncCheck,
 			}
 
-			_, err := tree.Parse(test.template, "", "", map[string]*parse.Tree{})
+			treeMap := map[string]*parse.Tree{}
+			_, err := tree.Parse(test.template, "", "", treeMap)
 			assert.NilError(t, err)
 
-			err = Check(tree)
+			err = Check(tree, treeMap)
 			if test.errorMessage == "" {
 				assert.NilError(t, err)
 			} else {

@@ -7,6 +7,7 @@ import (
 	"text/template/parse"
 
 	"github.com/motemen/go-template-statictools/templatetypes"
+	"go.uber.org/multierr"
 )
 
 // Usage: gotmplcheck [-json] tmpl.in
@@ -25,9 +26,12 @@ func main() {
 	}
 
 	for _, tree := range treeMap {
-		err = templatetypes.Check(tree)
+		err = templatetypes.Check(tree, treeMap)
 		if err != nil {
-			log.Println(err)
+			for _, err := range multierr.Errors(err) {
+				log.Println(err)
+			}
+			os.Exit(1)
 		}
 	}
 }
