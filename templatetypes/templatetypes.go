@@ -268,23 +268,38 @@ func (s *Checker) checkFieldChain(dot, receiver types.Type, node parse.Node, ide
 }
 
 func (s *Checker) checkFunction(dot types.Type, node *parse.IdentifierNode, cmd parse.Node, args []parse.Node, final types.Type) types.Type {
-	// TODO
 	name := node.Ident
 
-	switch name {
-	case "index":
-		a1 := s.checkArg(dot, args[1])
-		_ = s.checkArg(dot, args[2])
-		// TODO: check keyTypeOf(a1) == a2
-		return valueTypeOf(a1)
+	argTypes := []types.Type{}
 
-	case "len":
-		_ = s.checkArg(dot, args[1])
-		return types.Typ[types.Int]
-
+	// args[0] is the function name/node
+	for _, arg := range args[1:] {
+		typ := s.checkArg(dot, arg)
+		if typ == nil {
+			return nil
+		}
+		argTypes = append(argTypes, typ)
+	}
+	if final != nil {
+		argTypes = append(argTypes, final)
 	}
 
-	s.TODO(node, "checkFunction: cmd=%s args=%s", cmd, args)
+	if checkBuiltin, ok := builtinFuncs[name]; ok {
+		if checkBuiltin == nil {
+			s.TODO(cmd, "checkFunction: builtin %q", name)
+			return nil
+		}
+
+		typ, err := checkBuiltin(dot, argTypes)
+		if err != nil {
+			s.errorf(cmd, "function %s: %s", name, err)
+			return nil
+		}
+
+		return typ
+	}
+
+	// TODO: user-defined functions
 
 	return nil
 }
@@ -384,24 +399,6 @@ func peelType(typ types.Type) types.Type {
 			return typ
 		}
 	}
-}
-
-func valueTypeOf(typ types.Type) types.Type {
-	switch typ := typ.(type) {
-	case *types.Map:
-		return typ.Elem()
-	case *types.Slice:
-		return typ.Elem()
-	case *types.Array:
-		return typ.Elem()
-	case *types.Basic:
-		if typ.Kind() == types.String {
-			// return the "byte" type
-			return types.Typ[types.Byte]
-		}
-	}
-
-	return nil
 }
 
 func (s *Checker) diagContext(node parse.Node) (loc, context string) {

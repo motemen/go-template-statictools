@@ -41,6 +41,18 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Println(buf.String())
+
+	buf = bytes.Buffer{}
+	err = template.Must(template.New("").Funcs(template.FuncMap{"f": func(a, b int) int { return a + b }}).Parse("{{call f 1 2}}")).Execute(&buf, struct {
+		A Barer
+		N int
+	}{
+		N: 999,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println(buf.String())
 }
 
 func __main() {

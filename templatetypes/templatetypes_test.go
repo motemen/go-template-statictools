@@ -171,6 +171,23 @@ func TestCheck(t *testing.T) {
 {{end}}`,
 			"can't evaluate field InnerField in type github.com/motemen/go-template-statictools/templatetypes.Dot1",
 		},
+		{
+			"invalid arg of unknown function", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{unknownFunc .InvalidKey}}
+`,
+			"can't evaluate field InvalidKey in type github.com/motemen/go-template-statictools/templatetypes.Dot1",
+		},
+		{
+			"builtin len", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{len "foobar"}}
+{{len .Slice}}
+{{len .Map}}
+{{len .Inner}}
+`,
+			"function len: invalid argument type github.com/motemen/go-template-statictools/templatetypes.Dot1Inner",
+		},
 	}
 
 	for _, test := range tests {
