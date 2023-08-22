@@ -19,6 +19,7 @@ type Checker struct {
 	errors  []error
 	vars    []variable
 	treeSet map[string]*parse.Tree
+	visited map[*parse.Tree]bool
 }
 
 type variable struct {
@@ -38,7 +39,10 @@ func (s *Checker) varType(name string) (types.Type, error) {
 			return s.vars[i].typ, nil
 		}
 	}
-	return nil, fmt.Errorf("undefined variable: %s", name)
+
+	s.TODO(nil, "variable: %s", name)
+
+	return nil, nil
 }
 
 type TypeCheckError struct {
@@ -147,6 +151,10 @@ func (s *Checker) walkIfOrWith(nodeType parse.NodeType, dot types.Type, pipe *pa
 }
 
 func (s *Checker) walkRange(dot types.Type, r *parse.RangeNode) {
+	if dot == nil {
+		return
+	}
+
 	typ := peelType(s.checkPipeline(dot, r.Pipe))
 
 	// TODO: assign
@@ -180,12 +188,33 @@ func (s *Checker) walkTemplate(dot types.Type, t *parse.TemplateNode) {
 		return
 	}
 
+	if _, ok := s.visited[tree]; ok {
+		return
+	}
+
+	s.visited[tree] = false
 	dot = s.checkPipeline(dot, t.Pipe)
 	newState := *s
 	newState.vars = []variable{{"$", dot}}
 	newState.errors = nil
 	newState.walk(dot, tree.Root)
 	s.errors = append(s.errors, newState.errors...)
+	s.visited[tree] = true
+}
+
+func (s *Checker) push(name string, typ types.Type) {
+	s.vars = append(s.vars, variable{name: name, typ: typ})
+}
+
+func (s *Checker) setVar(name string, typ types.Type) {
+	for i := len(s.vars) - 1; i >= 0; i-- {
+		if s.vars[i].name == name {
+			s.vars[i].typ = typ
+			return
+		}
+	}
+
+	s.TODO(nil, "setVar: %s", name)
 }
 
 func (s *Checker) checkPipeline(dot types.Type, pipe *parse.PipeNode) (final types.Type) {
@@ -193,8 +222,18 @@ func (s *Checker) checkPipeline(dot types.Type, pipe *parse.PipeNode) (final typ
 		return
 	}
 
+	// TODO assign
+
 	for _, cmd := range pipe.Cmds {
 		final = s.checkCommand(dot, cmd, final)
+	}
+
+	for _, variable := range pipe.Decl {
+		if pipe.IsAssign {
+			s.setVar(variable.Ident[0], final)
+		} else {
+			s.push(variable.Ident[0], final)
+		}
 	}
 
 	return
@@ -206,24 +245,27 @@ func (s *Checker) checkCommand(dot types.Type, cmd *parse.CommandNode, final typ
 	switch n := firstWord.(type) {
 	case *parse.FieldNode:
 		return s.checkFieldNode(dot, n, cmd.Args, final)
-
 	case *parse.ChainNode:
 		return s.checkChainNode(dot, n, cmd.Args, final)
-
 	case *parse.IdentifierNode:
 		return s.checkFunction(dot, n, cmd, cmd.Args, final)
-
 	case *parse.PipeNode:
 		return s.checkPipeline(dot, n)
-
 	case *parse.VariableNode:
 		return s.checkVariableNode(dot, n, cmd.Args, final)
 	}
 
 	// TODO: notAFunction
+
 	switch firstWord.(type) {
 	case *parse.DotNode:
 		return dot
+	case *parse.StringNode:
+		return types.Typ[types.String]
+	case *parse.NumberNode:
+		return types.Typ[types.UntypedInt]
+	case *parse.NilNode:
+		return types.Typ[types.UntypedNil]
 	}
 
 	s.TODO(cmd, "checkCommand: %s (%T)", firstWord, firstWord)
@@ -251,6 +293,7 @@ func (s *Checker) checkChainNode(dot types.Type, chain *parse.ChainNode, args []
 
 func (s *Checker) checkVariableNode(dot types.Type, variable *parse.VariableNode, args []parse.Node, final types.Type) types.Type {
 	// $x.Field has $x as the first ident, Field as the second. Eval the var, then the fields.
+
 	typ, err := s.varType(variable.Ident[0])
 	if err != nil {
 		s.errorf(variable, "%s", err)
@@ -362,6 +405,8 @@ func (s *Checker) checkArg(dot types.Type, n parse.Node) types.Type {
 
 	case *parse.StringNode:
 		return types.Typ[types.String]
+	case *parse.NumberNode:
+		return types.Typ[types.UntypedInt]
 	}
 
 	s.TODO(n, "checkArg: %q (%T)", n, n)
@@ -446,6 +491,8 @@ func (s *Checker) Parse(name string, r io.Reader) error {
 }
 
 func (s *Checker) Check() error {
+	s.visited = map[*parse.Tree]bool{}
+
 	for _, tree := range s.treeSet {
 		s.vars = []variable{
 			{name: "$", typ: nil},
