@@ -1,8 +1,10 @@
 package templatetypes
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+	"text/template"
 
 	"gotest.tools/v3/assert"
 )
@@ -16,7 +18,6 @@ type Dot1 struct {
 }
 
 type Dot1Inner struct {
-	Inner      bool
 	InnerField int
 }
 
@@ -38,7 +39,7 @@ func TestCheck(t *testing.T) {
 	tests := []testCase{
 		{
 			"no type specification",
-			`{{.Foo}}{{.Bar}}`,
+			`{{.Foo}}{{.Inner.InnerField}}`,
 			"",
 		},
 		{
@@ -62,19 +63,19 @@ func TestCheck(t *testing.T) {
 		{
 			"nested field", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
-{{.Inner.Inner}}`,
+{{.Inner.InnerField}}`,
 			"",
 		},
 		{
 			"nested field, no existent", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
-{{.Inner.Inner.Inner}}`,
-			"can't evaluate field Inner in type bool",
+{{.Inner.InnerField.InnerInnerField}}`,
+			"can't evaluate field InnerInnerField in type int",
 		},
 		{
 			"with", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
-{{with .Inner}}{{.Inner}}{{end}}`,
+{{with .Inner}}{{.InnerField}}{{end}}`,
 			"",
 		},
 		{
@@ -172,9 +173,9 @@ func TestCheck(t *testing.T) {
 			"can't evaluate field InnerField in type github.com/motemen/go-template-statictools/templatetypes.Dot1",
 		},
 		{
-			"invalid arg of unknown function", `
+			"invalid arg of user-defined function", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
-{{unknownFunc .InvalidKey}}
+{{customFunc .InvalidKey}}
 `,
 			"can't evaluate field InvalidKey in type github.com/motemen/go-template-statictools/templatetypes.Dot1",
 		},
@@ -187,6 +188,24 @@ func TestCheck(t *testing.T) {
 {{len .Inner}}
 `,
 			"function len: invalid argument type github.com/motemen/go-template-statictools/templatetypes.Dot1Inner",
+		},
+		{
+			"map", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{.Map.foo.InvalidField}}`,
+			"can't evaluate field InvalidField in type github.com/motemen/go-template-statictools/templatetypes.Dot1ContainedValue",
+		},
+		{
+			"range on map", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{range .Map}}{{.Value}}{{/* @debug show . */}}{{end}}`,
+			"",
+		},
+		{
+			"range on map", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{range .Map}}{{.InvalidField}}{{end}}`,
+			"can't evaluate field InvalidField in type github.com/motemen/go-template-statictools/templatetypes.Dot1ContainedValue",
 		},
 	}
 
@@ -201,6 +220,42 @@ func TestCheck(t *testing.T) {
 				assert.NilError(t, err)
 			} else {
 				assert.Error(t, err, test.errorMessage)
+			}
+		})
+	}
+
+	for _, test := range tests {
+		t.Run("sanity check - "+test.name, func(t *testing.T) {
+			tmpl := template.Must(template.New("").Funcs(template.FuncMap{
+				"customFunc": func() string { return "customFunc" },
+			}).Parse(test.template))
+			dot1 := Dot1{
+				Foo: "foo",
+				Inner: Dot1Inner{
+					InnerField: 42,
+				},
+				Slice: []Dot1ContainedValue{
+					{Value: true},
+					{Value: false},
+				},
+				Map: map[string]Dot1ContainedValue{
+					"foo": {Value: true},
+					"bar": {Value: false},
+				},
+				Func1: func(n int, s string) FuncResult {
+					return FuncResult{
+						ResultField: s + strings.Repeat("!", n),
+					}
+				},
+			}
+			var buf bytes.Buffer
+			err := tmpl.Execute(&buf, dot1)
+			if test.errorMessage == "" {
+				assert.NilError(t, err)
+				t.Logf("%q -> %q", test.template, buf.String())
+			} else {
+				// do not assert here, since even if the typecheck fails,
+				// the execution may succeed
 			}
 		})
 	}

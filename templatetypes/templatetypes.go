@@ -92,6 +92,8 @@ func (s *Checker) walk(dot types.Type, node parse.Node) types.Type {
 					return obj.Type()
 				}
 				s.errorf(node, "cannot load type %s.%s", pkgName, typeName)
+			} else if key == "debug" && value == "show ." {
+				s.debugf(node, "dot: %v", dot)
 			}
 		}
 
@@ -158,15 +160,17 @@ func (s *Checker) walkRange(dot types.Type, r *parse.RangeNode) {
 		_ = s.walk(elemType, r.List)
 		return
 	case *types.Map:
-		// TODO
+		elemType := typ.Elem()
+		_ = s.walk(elemType, r.List)
+		return
 	case *types.Chan:
-		// TODO
+		elemType := typ.Elem()
+		_ = s.walk(elemType, r.List)
+		return
 	default:
 		s.errorf(r, "range can't iterate over %v", dot)
 		return
 	}
-
-	s.TODO(r, "walkRange: %s", typ)
 }
 
 func (s *Checker) walkTemplate(dot types.Type, t *parse.TemplateNode) {
@@ -330,10 +334,7 @@ func (s *Checker) checkField(dot types.Type, fieldName string, node parse.Node, 
 		}
 
 	case *types.Map:
-		// TODO
-
-	case *types.Pointer:
-		// TODO
+		return valueTypeOf(receiver)
 
 	}
 
