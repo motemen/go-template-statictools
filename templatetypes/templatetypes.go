@@ -156,6 +156,9 @@ func (s *Checker) walkRange(dot types.Type, r *parse.RangeNode) {
 	}
 
 	typ := peelType(s.checkPipeline(dot, r.Pipe))
+	if typ == nil {
+		return
+	}
 
 	// TODO: assign
 	switch typ := typ.(type) {
@@ -176,7 +179,7 @@ func (s *Checker) walkRange(dot types.Type, r *parse.RangeNode) {
 		_ = s.walk(elemType, r.List)
 		return
 	default:
-		s.errorf(r, "range can't iterate over %v", dot)
+		s.errorf(r, "range can't iterate over %v, pipe: %s", typ, r.Pipe)
 		return
 	}
 }
@@ -351,6 +354,66 @@ func (s *Checker) checkFunction(dot types.Type, node *parse.IdentifierNode, cmd 
 	return nil
 }
 
+func (s *Checker) checkCall(dot types.Type, fun *types.Func, node parse.Node, name string, args []parse.Node, final types.Type) types.Type {
+	argTypes := []types.Type{}
+
+	if len(args) > 0 {
+		for _, arg := range args[1:] {
+			typ := s.checkArg(dot, arg)
+			if typ == nil {
+				return nil
+			}
+			argTypes = append(argTypes, typ)
+		}
+		if final != nil {
+			argTypes = append(argTypes, final)
+		}
+	}
+
+	// TODO: check arg
+	_ = argTypes
+
+	results := fun.Type().(*types.Signature).Results()
+	switch results.Len() {
+	case 1:
+		return results.At(0).Type()
+
+	case 2:
+		if results.At(1).Type() != types.Universe.Lookup("error").Type() {
+			s.errorf(node, "function %s: second return value must be error", name)
+			return nil
+		}
+		return results.At(0).Type()
+
+	default:
+		s.errorf(node, "function %s: must return 1 or 2 values", name)
+		return nil
+	}
+}
+
+func lookupMethod(typ types.Type, name string) *types.Func {
+	switch typ := typ.(type) {
+	case *types.Named:
+		for i := 0; i < typ.NumMethods(); i++ {
+			meth := typ.Method(i)
+			if meth.Name() == name {
+				return meth
+			}
+		}
+		return lookupMethod(typ.Underlying(), name)
+
+	case *types.Interface:
+		for i := 0; i < typ.NumMethods(); i++ {
+			meth := typ.Method(i)
+			if meth.Name() == name {
+				return meth
+			}
+		}
+	}
+
+	return nil
+}
+
 func (s *Checker) checkField(dot types.Type, fieldName string, node parse.Node, args []parse.Node, final types.Type, receiver types.Type) types.Type {
 	if receiver == nil {
 		return nil
@@ -360,6 +423,10 @@ func (s *Checker) checkField(dot types.Type, fieldName string, node parse.Node, 
 
 	origReceiver := receiver
 	hasArgs := len(args) > 1 || final != nil
+
+	if meth := lookupMethod(receiver, fieldName); meth != nil {
+		return s.checkCall(dot, meth, node, fieldName, args, final)
+	}
 
 	receiver = peelType(receiver)
 
@@ -382,6 +449,7 @@ func (s *Checker) checkField(dot types.Type, fieldName string, node parse.Node, 
 	}
 
 	s.errorf(node, "can't evaluate field %s in type %v", fieldName, origReceiver)
+
 	return nil
 }
 

@@ -15,10 +15,25 @@ type Dot1 struct {
 	Slice []Dot1ContainedValue
 	Map   map[string]Dot1ContainedValue
 	Func1 func(n int, s string) FuncResult
+	Intf  Dot1InnerInterface
+}
+
+func (Dot1) Method() string {
+	return "method"
 }
 
 type Dot1Inner struct {
 	InnerField int
+}
+
+type Dot1InnerInterface interface {
+	InnerMethod() Dot1Inner
+}
+
+type Dot1InnerImpl string
+
+func (Dot1InnerImpl) InnerMethod() Dot1Inner {
+	return Dot1Inner{InnerField: 999}
 }
 
 type Dot1ContainedValue struct {
@@ -110,7 +125,7 @@ func TestCheck(t *testing.T) {
 			"range error", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
 {{range .Foo}}{{.Value}}{{end}}`,
-			"range can't iterate over github.com/motemen/go-template-statictools/templatetypes.Dot1",
+			"range can't iterate over string, pipe: .Foo",
 		},
 		{
 			"builtin function index", `
@@ -207,6 +222,16 @@ func TestCheck(t *testing.T) {
 {{range .Map}}{{.InvalidField}}{{end}}`,
 			"can't evaluate field InvalidField in type github.com/motemen/go-template-statictools/templatetypes.Dot1ContainedValue",
 		},
+		{
+			"method", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{.Method}}`, "",
+		},
+		{
+			"method", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{.Intf.InnerMethod.InnerField}}`, "",
+		},
 	}
 
 	for _, test := range tests {
@@ -226,7 +251,7 @@ func TestCheck(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run("sanity check - "+test.name, func(t *testing.T) {
-			tmpl := template.Must(template.New("").Funcs(template.FuncMap{
+			tmpl := template.Must(template.New(test.name).Funcs(template.FuncMap{
 				"customFunc": func() string { return "customFunc" },
 			}).Parse(test.template))
 			dot1 := Dot1{
@@ -247,6 +272,7 @@ func TestCheck(t *testing.T) {
 						ResultField: s + strings.Repeat("!", n),
 					}
 				},
+				Intf: Dot1InnerImpl("inner"),
 			}
 			var buf bytes.Buffer
 			err := tmpl.Execute(&buf, dot1)
