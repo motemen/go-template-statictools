@@ -424,6 +424,19 @@ func (s *Checker) checkField(dot types.Type, fieldName string, node parse.Node, 
 	origReceiver := receiver
 	hasArgs := len(args) > 1 || final != nil
 
+	obj, _, _ := types.LookupFieldOrMethod(receiver, false, nil, fieldName)
+	if obj != nil {
+		if hasArgs {
+			// FIXME
+			s.errorf(node, "field %q does not take any arguments", fieldName)
+		}
+		if meth, ok := obj.(*types.Func); ok {
+			return s.checkCall(dot, meth, node, fieldName, args, final)
+		} else {
+			return obj.Type()
+		}
+	}
+
 	if meth := lookupMethod(receiver, fieldName); meth != nil {
 		return s.checkCall(dot, meth, node, fieldName, args, final)
 	}
@@ -431,21 +444,8 @@ func (s *Checker) checkField(dot types.Type, fieldName string, node parse.Node, 
 	receiver = peelType(receiver)
 
 	switch receiver := receiver.(type) {
-	case *types.Struct:
-		for i := 0; i < receiver.NumFields(); i++ {
-			f := receiver.Field(i)
-			if f.Name() == fieldName {
-				if hasArgs {
-					// FIXME
-					s.errorf(node, "method %q does not take any arguments", fieldName)
-				}
-				return f.Type()
-			}
-		}
-
 	case *types.Map:
 		return valueTypeOf(receiver)
-
 	}
 
 	s.errorf(node, "can't evaluate field %s in type %v", fieldName, origReceiver)

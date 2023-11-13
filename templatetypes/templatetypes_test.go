@@ -16,6 +16,7 @@ type Dot1 struct {
 	Map   map[string]Dot1ContainedValue
 	Func1 func(n int, s string) FuncResult
 	Intf  Dot1InnerInterface
+	Dot1Embedded
 }
 
 func (Dot1) Method() string {
@@ -38,6 +39,14 @@ func (Dot1InnerImpl) InnerMethod() Dot1Inner {
 
 type Dot1ContainedValue struct {
 	Value bool
+}
+
+type Dot1Embedded struct {
+	EmbeddedInner Dot1EmbeddedInner
+}
+
+type Dot1EmbeddedInner struct {
+	EmbeddedInnerField string
 }
 
 type FuncResult struct {
@@ -231,6 +240,11 @@ func TestCheck(t *testing.T) {
 			"method", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
 {{.Intf.InnerMethod.InnerField}}`, "",
+		},
+		{
+			"embedded", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{.EmbeddedInner.EmbeddedInnerField}}`, "",
 		},
 	}
 
