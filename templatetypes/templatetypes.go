@@ -541,32 +541,39 @@ func (s *Checker) Parse(name string, r io.Reader) error {
 	tree := parse.New(name)
 	tree.Mode = parse.ParseComments | parse.SkipFuncCheck
 
-	treeSet := map[string]*parse.Tree{}
-
 	content, err := io.ReadAll(r)
 	if err != nil {
 		return err
 	}
 
+	treeSet := map[string]*parse.Tree{}
 	_, err = tree.Parse(string(content), "", "", treeSet)
 	if err != nil {
 		return err
 	}
 
-	s.treeSet = treeSet
+	if s.treeSet == nil {
+		s.treeSet = map[string]*parse.Tree{}
+	}
+	for name, tree := range treeSet {
+		s.treeSet[name] = tree
+	}
 
 	return nil
 }
 
-func (s *Checker) Check() error {
+func (s *Checker) Check(entryPoint string) error {
 	s.visited = map[*parse.Tree]bool{}
 
-	for _, tree := range s.treeSet {
-		s.vars = []variable{
-			{name: "$", typ: nil},
-		}
-		s.walk(nil, tree.Root)
+	tree := s.treeSet[entryPoint]
+	if tree == nil {
+		return fmt.Errorf("entry point %q not found", entryPoint)
 	}
+
+	s.vars = []variable{
+		{name: "$", typ: nil},
+	}
+	s.walk(nil, tree.Root)
 
 	return multierr.Combine(s.errors...)
 }

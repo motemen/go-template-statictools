@@ -254,7 +254,7 @@ func TestCheck(t *testing.T) {
 			err := s.Parse("", strings.NewReader(test.template))
 			assert.NilError(t, err)
 
-			err = s.Check()
+			err = s.Check("")
 			if test.errorMessage == "" {
 				assert.NilError(t, err)
 			} else {
