@@ -1,6 +1,7 @@
 package templatetypes
 
 import (
+	"errors"
 	"fmt"
 	"go/types"
 	"io"
@@ -11,8 +12,6 @@ import (
 	"text/template/parse"
 
 	"golang.org/x/tools/go/packages"
-
-	"go.uber.org/multierr"
 )
 
 type Checker struct {
@@ -575,5 +574,5 @@ func (s *Checker) Check(entryPoint string) error {
 	}
 	s.walk(nil, tree.Root)
 
-	return multierr.Combine(s.errors...)
+	return errors.Join(s.errors...)
 }

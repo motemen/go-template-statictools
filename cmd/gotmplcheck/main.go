@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/motemen/go-template-statictools/templatetypes"
-	"go.uber.org/multierr"
 )
 
 func main() {
@@ -29,7 +28,11 @@ func main() {
 
 	err := checker.Check(args[0])
 	if err != nil {
-		for _, err := range multierr.Errors(err) {
+		if u, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, err := range u.Unwrap() {
+				log.Println(checker.FormatError(err))
+			}
+		} else {
 			log.Println(checker.FormatError(err))
 		}
 		os.Exit(1)
