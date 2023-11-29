@@ -436,13 +436,12 @@ func (s *Checker) checkField(dot types.Type, fieldName string, node parse.Node, 
 
 	obj, _, _ := types.LookupFieldOrMethod(receiver, false, nil, fieldName)
 	if obj != nil {
-		if hasArgs {
-			// FIXME
-			s.errorf(node, "field %q does not take any arguments", fieldName)
-		}
 		if meth, ok := obj.(*types.Func); ok {
 			return s.checkCall(dot, meth, node, fieldName, args, final)
 		} else {
+			if hasArgs {
+				s.errorf(node, "field %q does not take any arguments", fieldName)
+			}
 			return obj.Type()
 		}
 	}
