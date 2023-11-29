@@ -9,6 +9,8 @@ import (
 )
 
 func main() {
+	flagDot := flag.String("dot", "", "`path/to.type` of template data")
+
 	flag.Parse()
 
 	log.SetFlags(0)
@@ -24,6 +26,10 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+	}
+
+	if flagDot != nil && *flagDot != "" {
+		checker.DotType = *flagDot
 	}
 
 	err := checker.Check(args[0])

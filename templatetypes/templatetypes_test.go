@@ -82,7 +82,7 @@ func TestCheck(t *testing.T) {
 			"nonexistent type", `
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.InvalidType */}}
 {{.Foo}}{{.Bar}}`,
-			"cannot load type github.com/motemen/go-template-statictools/templatetypes.InvalidType",
+			"@type github.com/motemen/go-template-statictools/templatetypes.InvalidType: cannot load type github.com/motemen/go-template-statictools/templatetypes.InvalidType",
 		},
 		{
 			"nested field", `

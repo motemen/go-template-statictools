@@ -15,6 +15,9 @@ import (
 )
 
 type Checker struct {
+	// default full annotated (path/to/pkg.type) type path of dot, if any
+	DotType string
+
 	errors  []error
 	vars    []variable
 	treeSet map[string]*parse.Tree
@@ -56,6 +59,32 @@ func (e TypeCheckError) Error() string {
 // {{/* @key value */}}
 var rxAnnotation = regexp.MustCompile(`^/\*\s*@(\w+)\s+(.*?)\s*\*/$`)
 
+func (s *Checker) setDotType(fullType string) (types.Type, error) {
+	p := strings.LastIndex(fullType, ".")
+	pkgName, typeName := fullType[:p], fullType[p+1:]
+
+	pkgs, err := packages.Load(&packages.Config{
+		Mode:  packages.NeedTypes | packages.NeedTypesInfo,
+		Tests: true, // FIXME: this is only for testing purpose
+	}, pkgName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load pakcage %q: %w", pkgName, err)
+	}
+	if pkgs[0].Errors != nil {
+		return nil, fmt.Errorf("failed to load package %q: %v", pkgName, pkgs[0].Errors)
+	}
+	for _, pkg := range pkgs {
+		obj := pkg.Types.Scope().Lookup(typeName)
+		if obj == nil {
+			continue
+		}
+		// TODO: compare dot with obj.Type()
+		s.setTopVarType(obj.Type())
+		return obj.Type(), nil
+	}
+	return nil, fmt.Errorf("cannot load type %s.%s", pkgName, typeName)
+}
+
 // walk walks node.
 // It returns new dot type. Only if @type annotation is given, the type will change.
 func (s *Checker) walk(dot types.Type, node parse.Node) types.Type {
@@ -72,29 +101,11 @@ func (s *Checker) walk(dot types.Type, node parse.Node) types.Type {
 		if m != nil {
 			key, value := m[1], m[2]
 			if key == "type" {
-				p := strings.LastIndex(value, ".")
-				pkgName, typeName := value[:p], value[p+1:]
-
-				pkgs, err := packages.Load(&packages.Config{
-					Mode:  packages.NeedTypes | packages.NeedTypesInfo,
-					Tests: true, // FIXME: this is only for testing purpose
-				}, pkgName)
+				typ, err := s.setDotType(value)
 				if err != nil {
-					s.errorf(node, "failed to load package %q: %v", pkgName, err)
+					s.errorf(node, "@type %s: %s", value, err)
 				}
-				if pkgs[0].Errors != nil {
-					s.errorf(node, "failed to load package %q: %v", pkgName, pkgs[0].Errors)
-				}
-				for _, pkg := range pkgs {
-					obj := pkg.Types.Scope().Lookup(typeName)
-					if obj == nil {
-						continue
-					}
-					// TODO: compare dot with obj.Type()
-					s.setTopVarType(obj.Type())
-					return obj.Type()
-				}
-				s.errorf(node, "cannot load type %s.%s", pkgName, typeName)
+				return typ
 			} else if key == "debug" && value == "show ." {
 				s.debugf(node, "dot: %v", dot)
 			}
@@ -572,7 +583,16 @@ func (s *Checker) Check(entryPoint string) error {
 	s.vars = []variable{
 		{name: "$", typ: nil},
 	}
-	s.walk(nil, tree.Root)
+
+	var typ types.Type
+	if s.DotType != "" {
+		var err error
+		typ, err = s.setDotType(s.DotType)
+		if err != nil {
+			return err
+		}
+	}
+	s.walk(typ, tree.Root)
 
 	return errors.Join(s.errors...)
 }
