@@ -1,0 +1,15 @@
+{{/* Run with `gotmplcheck example/example_with_annotation.tmpl` */}}
+{{/* @type github.com/motemen/go-template-statictools/example.Data */}}
+
+{{with .Meta}}
+  Title: {{.Title_with_typo}}
+{{end}}
+
+Items: {{range .Items}}
+  - {{.Name}}
+  - x: {{.Method "x"}}
+  - y: {{.NoSuchMethod "x"}}
+  {{range $v := .Field}}
+	- {{$v.NoSuchField}}
+  {{end}}
+{{end}}
