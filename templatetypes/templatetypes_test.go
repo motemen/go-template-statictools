@@ -246,6 +246,37 @@ func TestCheck(t *testing.T) {
 {{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
 {{.EmbeddedInner.EmbeddedInnerField}}`, "",
 		},
+		{
+			"range (1-var, no assign)", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{range $i, $item := .Slice}}
+{{$i}}: {{$item.Value}}
+{{end}}`, "",
+		},
+		{
+			"range (2-var, no assign)", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{range $item := .Slice}}
+{{$item.Value}}
+{{end}}`, "",
+		},
+		{
+			"range (1-var, assign)", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{ $i := "" }}
+{{ $item := "" }}
+{{range $i, $item = .Slice}}
+{{$i}}: {{$item.Value}}
+{{end}}`, "",
+		},
+		{
+			"range (2-var, assign)", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{ $item := "" }}
+{{range $item = .Slice}}
+{{$item.Value}}
+{{end}}`, "",
+		},
 	}
 
 	for _, test := range tests {

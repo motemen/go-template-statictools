@@ -165,33 +165,56 @@ func (s *Checker) walkRange(dot types.Type, r *parse.RangeNode) {
 		return
 	}
 
+	mark := len(s.vars)
+
 	typ := peelType(s.checkPipeline(dot, r.Pipe))
 	if typ == nil {
 		return
 	}
 
-	// TODO: assign
+	var keyType, elemType types.Type
 	switch typ := typ.(type) {
 	case *types.Slice:
-		elemType := typ.Elem()
-		_ = s.walk(elemType, r.List)
-		return
+		keyType = types.Typ[types.Int]
+		elemType = typ.Elem()
 	case *types.Array:
-		elemType := typ.Elem()
-		_ = s.walk(elemType, r.List)
-		return
+		keyType = types.Typ[types.Int]
+		elemType = typ.Elem()
 	case *types.Map:
-		elemType := typ.Elem()
-		_ = s.walk(elemType, r.List)
-		return
+		keyType = typ.Key()
+		elemType = typ.Elem()
 	case *types.Chan:
-		elemType := typ.Elem()
-		_ = s.walk(elemType, r.List)
-		return
+		elemType = typ.Elem()
 	default:
 		s.errorf(r, "range can't iterate over %v, pipe: %s", typ, r.Pipe)
 		return
 	}
+
+	if len(r.Pipe.Decl) > 0 {
+		if r.Pipe.IsAssign {
+			if len(r.Pipe.Decl) == 1 {
+				// eg. "$v = range ."
+				s.setVar(r.Pipe.Decl[0].Ident[0], elemType)
+			} else {
+				// eg. "$k, $v = range .""
+				s.setVar(r.Pipe.Decl[0].Ident[0], keyType)
+				s.setVar(r.Pipe.Decl[1].Ident[0], elemType)
+			}
+		} else {
+			if len(r.Pipe.Decl) == 1 {
+				// eg. "$v := range ."
+				s.vars[len(s.vars)-1].typ = elemType
+			} else {
+				// eg. "$k, $v := range .""
+				s.vars[len(s.vars)-2].typ = keyType
+				s.vars[len(s.vars)-1].typ = elemType
+			}
+		}
+	}
+
+	_ = s.walk(elemType, r.List)
+
+	s.vars = s.vars[:mark]
 }
 
 func (s *Checker) walkTemplate(dot types.Type, t *parse.TemplateNode) {
@@ -234,8 +257,6 @@ func (s *Checker) checkPipeline(dot types.Type, pipe *parse.PipeNode) (final typ
 	if pipe == nil {
 		return
 	}
-
-	// TODO assign
 
 	for _, cmd := range pipe.Cmds {
 		final = s.checkCommand(dot, cmd, final)
@@ -360,6 +381,7 @@ func (s *Checker) checkFunction(dot types.Type, node *parse.IdentifierNode, cmd 
 	}
 
 	// TODO: user-defined functions
+	s.TODO(cmd, "user-defined function %q", name)
 
 	return nil
 }
