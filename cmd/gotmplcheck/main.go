@@ -13,6 +13,7 @@ func main() {
 		flagDot     = flag.String("dot", "", "`path/to/pkg.type` of template data")
 		flagVerbose = flag.Bool("verbose", false, "enable verbose logging")
 		flagFuncMap = flag.String("funcmap", "", "`path/to/pkg.name` of template FuncMap")
+		flagSoft    = flag.Bool("soft", false, "allow undefined functions or templates")
 	)
 
 	flag.Parse()
@@ -40,6 +41,10 @@ func main() {
 	}
 	if flagFuncMap != nil {
 		checker.FuncMapVar = *flagFuncMap
+	}
+	if flagSoft != nil && *flagSoft {
+		checker.AllowUndefinedFuncs = true
+		checker.AllowUndefinedTemplates = true
 	}
 
 	err := checker.Check(args[0])

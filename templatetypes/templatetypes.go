@@ -25,6 +25,9 @@ type Checker struct {
 	// full annotated (path/to/pkg.name) variable that is a text/template.FuncMap for user-defined functions
 	FuncMapVar string
 
+	AllowUndefinedFuncs     bool
+	AllowUndefinedTemplates bool
+
 	Verbose bool
 
 	errors  []error
@@ -290,7 +293,11 @@ func (s *Checker) walkRange(dot types.Type, r *parse.RangeNode) {
 func (s *Checker) walkTemplate(dot types.Type, t *parse.TemplateNode) {
 	tree := s.treeSet[t.Name]
 	if tree == nil {
-		s.errorf(t, "template %q not defined", t.Name)
+		if s.AllowUndefinedTemplates {
+			s.debugf(t, "skip: template %q not defined", t.Name)
+		} else {
+			s.errorf(t, "template %q not defined", t.Name)
+		}
 		return
 	}
 
@@ -450,15 +457,15 @@ func (s *Checker) checkFunction(dot types.Type, node *parse.IdentifierNode, cmd 
 		return typ
 	}
 
-	// TODO: user-defined functions
 	if fun, ok := s.funcMap[name]; ok {
 		return fun.Results().At(0).Type()
+	}
+
+	if s.AllowUndefinedFuncs {
+		s.debugf(cmd, "skip: function %q not found", name)
 	} else {
 		s.errorf(cmd, "function %q not found", name)
-		return nil
 	}
-	// s.TODO(cmd, "user-defined function %q", name)
-
 	return nil
 }
 
