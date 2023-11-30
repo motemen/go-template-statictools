@@ -3,14 +3,18 @@ package templatetypes
 import (
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/token"
 	"go/types"
 	"io"
 	"log"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/template/parse"
 
+	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -18,12 +22,16 @@ type Checker struct {
 	// default full annotated (path/to/pkg.type) type path of dot, if any
 	DotType string
 
+	// full annotated (path/to/pkg.name) variable that is a text/template.FuncMap for user-defined functions
+	FuncMapVar string
+
 	Verbose bool
 
 	errors  []error
 	vars    []variable
 	treeSet map[string]*parse.Tree
 	visited map[*parse.Tree]bool
+	funcMap map[string]*types.Signature
 }
 
 type variable struct {
@@ -60,6 +68,66 @@ func (e TypeCheckError) Error() string {
 
 // {{/* @key value */}}
 var rxAnnotation = regexp.MustCompile(`^/\*\s*@(\w+)\s+(.*?)\s*\*/$`)
+
+func (s *Checker) loadFuncMap(fullType string) (map[string]*types.Signature, error) {
+	p := strings.LastIndex(fullType, ".")
+	pkgName, varName := fullType[:p], fullType[p+1:]
+	pkgs, err := packages.Load(&packages.Config{
+		Mode:  packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax,
+		Tests: true, // FIXME: this is only for testing purpose
+	}, pkgName)
+	if err != nil {
+		return nil, err
+	}
+	pkg := pkgs[0]
+	if pkg.Errors != nil {
+		return nil, fmt.Errorf("errors: %v", pkg.Errors)
+	}
+
+	varObj := pkg.Types.Scope().Lookup(varName)
+	if varObj == nil {
+		return nil, fmt.Errorf("cannot find %s.%s", pkgName, varName)
+	}
+	if types.TypeString(varObj.Type(), nil) != "text/template.FuncMap" {
+		return nil, fmt.Errorf("%s.%s is not text/template.FuncMap", pkgName, varName)
+	}
+
+	funcTypeMap := map[string]*types.Signature{}
+
+	for _, f := range pkg.Syntax {
+		path, _ := astutil.PathEnclosingInterval(f, varObj.Pos(), varObj.Pos())
+		if _, ok := path[0].(*ast.File); ok {
+			continue
+		}
+		for _, node := range path {
+			decl, ok := node.(*ast.GenDecl)
+			if !ok || decl.Tok != token.VAR {
+				continue
+			}
+
+			for _, spec := range decl.Specs {
+				valueSpec := spec.(*ast.ValueSpec)
+				for i := range valueSpec.Names {
+					if pkg.TypesInfo.Defs[valueSpec.Names[i]] != varObj {
+						continue
+					}
+					lit := valueSpec.Values[i].(*ast.CompositeLit)
+					for _, elt := range lit.Elts {
+						kv := elt.(*ast.KeyValueExpr)
+						key, err := strconv.Unquote(kv.Key.(*ast.BasicLit).Value)
+						if err != nil {
+							return nil, err
+						}
+						typ := pkg.TypesInfo.TypeOf(kv.Value)
+						funcTypeMap[key] = typ.(*types.Signature)
+					}
+				}
+			}
+		}
+	}
+
+	return funcTypeMap, nil
+}
 
 func (s *Checker) setDotType(fullType string) (types.Type, error) {
 	p := strings.LastIndex(fullType, ".")
@@ -383,7 +451,13 @@ func (s *Checker) checkFunction(dot types.Type, node *parse.IdentifierNode, cmd 
 	}
 
 	// TODO: user-defined functions
-	s.TODO(cmd, "user-defined function %q", name)
+	if fun, ok := s.funcMap[name]; ok {
+		return fun.Results().At(0).Type()
+	} else {
+		s.errorf(cmd, "function %q not found", name)
+		return nil
+	}
+	// s.TODO(cmd, "user-defined function %q", name)
 
 	return nil
 }
@@ -608,6 +682,14 @@ func (s *Checker) Check(entryPoint string) error {
 
 	s.vars = []variable{
 		{name: "$", typ: nil},
+	}
+
+	if s.FuncMapVar != "" {
+		m, err := s.loadFuncMap(s.FuncMapVar)
+		if err != nil {
+			return err
+		}
+		s.funcMap = m
 	}
 
 	var typ types.Type
