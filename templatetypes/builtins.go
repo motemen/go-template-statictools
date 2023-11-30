@@ -10,27 +10,47 @@ import (
 type funcChecker func(dot types.Type, args []types.Type) (types.Type, error)
 
 var builtinFuncs = map[string]funcChecker{
-	"and":      nil, // checkBuiltinAnd,
-	"call":     nil, // checkBuiltinCall,
-	"html":     nil, // checkBuiltinHTMLEscaper,
+	"and":      stubBuiltinFunc(types.Typ[types.Bool]),
+	"call":     checkBuiltinCall,
+	"html":     stubBuiltinFunc(types.Typ[types.String]),
 	"index":    checkBuiltinIndex,
-	"slice":    nil, // checkBuiltinSlice,
-	"js":       nil, // checkBuiltinJSEscaper,
+	"slice":    checkBuiltinSlice,
+	"js":       stubBuiltinFunc(types.Typ[types.String]),
 	"len":      checkBuiltinLen,
-	"not":      nil, // checkBuiltinNot,
-	"or":       nil, // checkBuiltinOr,
-	"print":    nil, // checkBuiltinPrint,
-	"printf":   nil, // checkBuiltinPrintf,
-	"println":  nil, // checkBuiltinPrintln,
-	"urlquery": nil, // checkBuiltinURLQueryEscaper,
+	"not":      stubBuiltinFunc(types.Typ[types.Bool]),
+	"or":       stubBuiltinFunc(types.Typ[types.Bool]),
+	"print":    stubBuiltinFunc(types.Typ[types.String]),
+	"printf":   stubBuiltinFunc(types.Typ[types.String]),
+	"println":  stubBuiltinFunc(types.Typ[types.String]),
+	"urlquery": stubBuiltinFunc(types.Typ[types.String]),
 
 	// Comparisons
-	"eq": nil, // checkBuiltinEq, // ==
-	"ge": nil, // checkBuiltinGe, // >=
-	"gt": nil, // checkBuiltinGt, // >
-	"le": nil, // checkBuiltinLe, // <=
-	"lt": nil, // checkBuiltinLt, // <
-	"ne": nil, // checkBuiltinNe, // !=
+	"eq": stubBuiltinFunc(types.Typ[types.Bool]), // ==
+	"ge": stubBuiltinFunc(types.Typ[types.Bool]), // >=
+	"gt": stubBuiltinFunc(types.Typ[types.Bool]), // >
+	"le": stubBuiltinFunc(types.Typ[types.Bool]), // <=
+	"lt": stubBuiltinFunc(types.Typ[types.Bool]), // <
+	"ne": stubBuiltinFunc(types.Typ[types.Bool]), // !=
+}
+
+func stubBuiltinFunc(fixedType types.Type) func(dot types.Type, args []types.Type) (types.Type, error) {
+	return func(dot types.Type, args []types.Type) (types.Type, error) {
+		return fixedType, nil
+	}
+}
+
+func checkBuiltinCall(dot types.Type, args []types.Type) (types.Type, error) {
+	// FXIME: check types
+	fn, ok := args[0].(*types.Signature)
+	if !ok {
+		return nil, fmt.Errorf("expected function type, got %s", args[0])
+	}
+	return fn.Results().At(0).Type(), nil
+}
+
+func checkBuiltinSlice(dot types.Type, args []types.Type) (types.Type, error) {
+	// FIXME: check types
+	return args[0], nil
 }
 
 func checkBuiltinIndex(dot types.Type, args []types.Type) (types.Type, error) {

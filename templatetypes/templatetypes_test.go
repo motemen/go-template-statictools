@@ -277,6 +277,18 @@ func TestCheck(t *testing.T) {
 {{$item.Value}}
 {{end}}`, "",
 		},
+		{
+			"builtin call", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{(call .Func1 3 "foo").ResultField}}`,
+			"",
+		},
+		{
+			"builtin slice", `
+{{/* @type github.com/motemen/go-template-statictools/templatetypes.Dot1 */}}
+{{slice .Slice 1 2 | len}}`,
+			"",
+		},
 	}
 
 	for _, test := range tests {
