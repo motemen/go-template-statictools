@@ -12,7 +12,7 @@ Statically typechecks Go templates.
 
 `-dot` specifies the type of the data passed to the template. It can be specified in the template itself with `{{/* @type path/to/pkg */}}`.
 
-`-funcmap` specifies the function map passed to the template. It can be specified in the template itself with `{{/* @funcmap path/to/pkg */}}`.
+`-funcmap` specifies the function map passed to the template.
 
 `-soft` ignores errors about undefined functions and templates.
 
