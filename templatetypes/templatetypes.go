@@ -245,10 +245,10 @@ func (s *Checker) walkRange(dot types.Type, r *parse.RangeNode) {
 	var keyType, elemType types.Type
 	switch typ := typ.(type) {
 	case *types.Slice:
-		keyType = types.Typ[types.Int]
+		keyType = types.Typ[types.UntypedInt]
 		elemType = typ.Elem()
 	case *types.Array:
-		keyType = types.Typ[types.Int]
+		keyType = types.Typ[types.UntypedInt]
 		elemType = typ.Elem()
 	case *types.Map:
 		keyType = typ.Key()
@@ -582,6 +582,8 @@ func (s *Checker) checkArg(dot types.Type, n parse.Node) types.Type {
 		return types.Typ[types.String]
 	case *parse.NumberNode:
 		return types.Typ[types.UntypedInt]
+	case *parse.BoolNode:
+		return types.Typ[types.UntypedBool]
 	}
 
 	s.TODO(n, "checkArg: %q (%T)", n, n)
