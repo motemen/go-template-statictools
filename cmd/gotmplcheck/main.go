@@ -9,7 +9,10 @@ import (
 )
 
 func main() {
-	flagDot := flag.String("dot", "", "`path/to.type` of template data")
+	var (
+		flagDot     = flag.String("dot", "", "`path/to.type` of template data")
+		flagVerbose = flag.Bool("verbose", false, "enable verbose logging")
+	)
 
 	flag.Parse()
 
@@ -30,6 +33,9 @@ func main() {
 
 	if flagDot != nil && *flagDot != "" {
 		checker.DotType = *flagDot
+	}
+	if flagVerbose != nil {
+		checker.Verbose = *flagVerbose
 	}
 
 	err := checker.Check(args[0])

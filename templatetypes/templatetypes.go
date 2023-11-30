@@ -18,6 +18,8 @@ type Checker struct {
 	// default full annotated (path/to/pkg.type) type path of dot, if any
 	DotType string
 
+	Verbose bool
+
 	errors  []error
 	vars    []variable
 	treeSet map[string]*parse.Tree
@@ -518,6 +520,9 @@ func (s *Checker) TODO(node parse.Node, format string, args ...any) {
 }
 
 func (s *Checker) debugf(node parse.Node, format string, args ...any) {
+	if !s.Verbose {
+		return
+	}
 	if node == nil {
 		log.Printf("debug: "+format, args...)
 	} else {
